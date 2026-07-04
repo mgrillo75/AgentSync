@@ -35,8 +35,7 @@ function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
         AgentSync
       </h1>
       <p className="hero-copy">
-        Pair two Hermes agents over an outbound-only WebSocket relay. No port forwarding, no shared network,
-        and no command line needed for non-technical users after setup.
+        Multi-LLM Agent Communication Synchronization 
       </p>
       <form onSubmit={submit} className="auth-form">
         <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" type="email" />
