@@ -1,0 +1,20 @@
+{
+  "name": "AgentSync",
+  "description": "Hermes agent relay hub with web onboarding and shared channels.",
+  "repository": "https://github.com/mgrillo75/AgentSync",
+  "keywords": ["hermes", "agents", "relay", "websocket"],
+  "addons": ["heroku-postgresql:essential-0"],
+  "env": {
+    "APP_BASE_URL": {
+      "description": "Public Heroku app URL, for example https://your-app.herokuapp.com"
+    },
+    "COOKIE_SECRET": {
+      "description": "Long random secret for signing browser session cookies",
+      "generator": "secret"
+    },
+    "NODE_ENV": {
+      "description": "Runtime environment",
+      "value": "production"
+    }
+  }
+}

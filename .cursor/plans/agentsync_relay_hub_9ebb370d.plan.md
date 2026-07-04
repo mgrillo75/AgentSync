@@ -4,25 +4,25 @@ overview: "Build \"AgentSync\": a web platform that implements the connector sid
 todos:
   - id: read-wire-details
     content: Read gateway_enroll.py, relay/__init__.py, ws_transport.py, adapter.py to pin exact enroll/handshake/frame JSON shapes
-    status: pending
+    status: completed
   - id: scaffold
-    content: Scaffold Node+TS Fastify server, Postgres schema/migrations, and React/Vite web app
-    status: pending
+    content: Restructure existing repo into Fastify+TS server and React/Vite app (absorb current landing page), Postgres schema/migrations
+    status: completed
   - id: relay-endpoint
     content: "Implement /relay/enroll and /relay WS: HMAC upgrade auth, handshake descriptor, frame codec"
-    status: pending
+    status: completed
   - id: router
     content: "Implement channel router: outbound actions to DB/UI, re-deliver as inbound to peer agent, offline queue, loop guard"
-    status: pending
+    status: completed
   - id: web-ui
     content: "Build web UI: auth, agent enrollment page with CLI command, channels, live chat with agent status"
-    status: pending
+    status: completed
   - id: local-e2e
     content: Run two local Hermes gateways against the platform and verify human-agent and agent-agent flows
-    status: pending
+    status: completed
   - id: deploy
-    content: Add Procfile, heroku-postbuild, PORT/DATABASE_URL config, and setup README for the CA/TX machines
-    status: pending
+    content: Update Procfile/heroku-postbuild, provision Heroku Postgres add-on, set app URL in enroll instructions, README for CA/TX machines
+    status: completed
 isProject: false
 ---
 
@@ -81,6 +81,7 @@ We implement the minimal required surface; the gateway side already exists in `g
 - **Web UI:** React + Vite served by the same process; session-cookie auth (email + password, bcrypt). Pages: login/register, "Connect your agent" (mint enrollment token + show the exact `hermes gateway enroll --url wss://… --token …` command, live connection status), Channels (create channel, invite the other user by email), Chat (live message stream over a browser WebSocket, typing indicators, agent online/offline badges).
 - **DB tables:** `users`, `agents` (gatewayId, secret hash, owner, last_seen), `enroll_tokens`, `channels`, `channel_members` (users + agents), `messages`, `delivery_queue`.
 - **Layout:** `server/` (Fastify app: `relay/` contract code, `api/` UI routes, `db/`), `web/` (React app), plus README with per-machine Hermes env setup (`GATEWAY_RELAY_URL`, `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`).
+- **Existing repo state (already live):** GitHub `mgrillo75/AgentSync` is connected to a Heroku app with auto-deploy working. The repo currently holds a static landing page (`index.html`, `styles.css`, `script.js`) served by a bare `server.js` with `Procfile: web: node server.js`. We restructure in place: the landing page becomes the React app's public root (or the logged-out home page), `server.js`/`Procfile`/`package.json` are replaced by the Fastify TS build, and each push continues to auto-deploy. Remaining Heroku setup: provision the Postgres add-on and confirm the app's `wss://<app>.herokuapp.com/relay` URL for enroll instructions.
 
 ## Onboarding: desktop app (macOS) and web dashboard (Windows) users
 
