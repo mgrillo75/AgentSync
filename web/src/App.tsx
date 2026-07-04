@@ -86,7 +86,7 @@ function ConnectAgentPanel({
         <button onClick={createToken}>Generate Pairing Token</button>
       </div>
       <p className="muted">
-        Primary non-technical flow: paste the generated prompt into Hermes Desktop or the dashboard chat and let the
+        Paste the generated prompt into Hermes Desktop or the dashboard chat and let the
         agent run the setup commands.
       </p>
       {config?.persistence === "memory" ? (
