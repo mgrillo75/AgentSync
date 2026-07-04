@@ -1,0 +1,140 @@
+:root {
+  --bg-deep: #04100f;
+  --bg-mid: #071b1a;
+  --cyan: #38f2e0;
+  --cyan-soft: #7ffff2;
+  --cyan-dim: #16a89a;
+  --glow: rgba(56, 242, 224, 0.55);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+}
+
+body {
+  font-family: "Michroma", "Segoe UI", system-ui, sans-serif;
+  position: relative;
+  /* radial teal glow blooming from center, fading to near-black edges */
+  background:
+    radial-gradient(120% 90% at 50% 42%, rgba(20, 168, 154, 0.18) 0%, rgba(7, 27, 26, 0.35) 40%, var(--bg-deep) 75%),
+    radial-gradient(140% 120% at 50% 120%, rgba(56, 242, 224, 0.05) 0%, transparent 55%),
+    var(--bg-deep);
+}
+
+/* Animated node network canvas */
+#network {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  display: block;
+}
+
+.scene {
+  position: relative;
+  z-index: 3;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: clamp(2.5rem, 7vh, 6rem);
+}
+
+/* ---- Brand / title ---- */
+.brand {
+  text-align: center;
+  user-select: none;
+}
+
+.brand__title {
+  position: relative;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  font-size: clamp(2.4rem, 9vw, 7rem);
+  color: var(--cyan-soft);
+  line-height: 1;
+  text-transform: none;
+  text-shadow:
+    0 0 4px rgba(127, 255, 242, 0.55),
+    0 0 12px rgba(56, 242, 224, 0.28);
+  animation: flicker 6s infinite ease-in-out;
+}
+
+/* faint duplicate for extra bloom */
+.brand__title::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  text-shadow: 0 0 24px rgba(56, 242, 224, 0.22);
+  z-index: -1;
+  filter: blur(2px);
+}
+
+.brand__underline {
+  margin: 1.1rem auto 0;
+  width: clamp(120px, 26vw, 320px);
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--cyan) 20%,
+    var(--cyan-soft) 50%,
+    var(--cyan) 80%,
+    transparent
+  );
+  box-shadow: 0 0 14px var(--glow), 0 0 30px var(--glow);
+  opacity: 0.85;
+  animation: pulse 4s infinite ease-in-out;
+}
+
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  47% { opacity: 1; }
+  48% { opacity: 0.82; }
+  49% { opacity: 1; }
+  71% { opacity: 1; }
+  72% { opacity: 0.9; }
+  73% { opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.55; transform: scaleX(0.92); }
+  50% { opacity: 1; transform: scaleX(1); }
+}
+
+/* ---- Atmospheric overlays ---- */
+.vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(2, 8, 8, 0.85) 100%);
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0.04;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand__title,
+  .brand__underline {
+    animation: none;
+  }
+}
