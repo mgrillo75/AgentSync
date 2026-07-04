@@ -1,0 +1,12 @@
+{
+  "name": "agentsync",
+  "version": "1.0.0",
+  "description": "AgentSync landing page",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
