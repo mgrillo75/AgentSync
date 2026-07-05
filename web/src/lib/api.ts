@@ -55,6 +55,7 @@ export const api = {
       restartCommand: string;
       agentPrompt: string;
     }>("/api/agents/pair", { method: "POST", body: JSON.stringify({}) }),
+  setupScriptUrl: (agentId: string, os: "mac" | "windows") => `/api/agents/${agentId}/setup-script?os=${os}`,
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   listChannels: () => request<{ channels: Channel[] }>("/api/channels"),
   createChannel: (name: string, inviteUserId: string) =>

@@ -76,6 +76,17 @@ button.secondary:hover,
   background: #1a2636;
 }
 
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  padding: 0.72rem 0.95rem;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
 input,
 select,
 textarea {
@@ -511,6 +522,29 @@ small {
 
 .command-stack {
   margin: 1rem 0;
+}
+
+.setup-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.setup-downloads.compact {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.setup-downloads.compact .link-button {
+  padding: 0.5rem 0.68rem;
+  font-size: 0.76rem;
+}
+
+.setup-note {
+  margin: -0.2rem 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .warning,

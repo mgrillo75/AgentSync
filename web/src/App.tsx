@@ -19,6 +19,19 @@ function copy(text: string) {
   void navigator.clipboard?.writeText(text);
 }
 
+function SetupScriptLinks({ agentId, compact = false }: { agentId: string; compact?: boolean }) {
+  return (
+    <div className={compact ? "setup-downloads compact" : "setup-downloads"}>
+      <a className="link-button" href={api.setupScriptUrl(agentId, "mac")}>
+        Download Mac setup file
+      </a>
+      <a className="link-button" href={api.setupScriptUrl(agentId, "windows")}>
+        Download Windows setup file
+      </a>
+    </div>
+  );
+}
+
 function LogoLockup({ compact = false }: { compact?: boolean }) {
   return (
     <div className={compact ? "brand-lockup compact" : "brand-lockup"}>
@@ -102,8 +115,8 @@ function ConnectAgentPanel({
         <button onClick={createPairing}>Generate Pairing</button>
       </div>
       <p className="muted">
-        Paste the generated prompt into your agent message window and let the
-        agent write the relay environment lines.
+        Paste the generated prompt into your agent message window and let the agent write the relay environment lines. If
+        Hermes chat is not responding, download the setup file instead.
       </p>
       {config?.persistence === "memory" ? (
         <p className="warning">Running without Postgres. Attach Heroku Postgres before real use.</p>
@@ -114,6 +127,12 @@ function ConnectAgentPanel({
           <label>Paste this into your agent chat</label>
           <textarea readOnly value={pairing.agentPrompt} />
           <button onClick={() => copy(pairing.agentPrompt)}>Copy Agent Prompt</button>
+          <label>If Hermes chat is not responding</label>
+          <SetupScriptLinks agentId={pairing.agent.id} />
+          <p className="setup-note">
+            On macOS, double-click the downloaded file. If macOS blocks it, right-click the file and choose Open, then Open
+            again.
+          </p>
           <label>Manual .env lines</label>
           <code>{pairing.env}</code>
           <button className="secondary" onClick={() => copy(pairing.env)}>Copy Env Lines</button>
@@ -133,6 +152,7 @@ function ConnectAgentPanel({
               <small>{agent.gatewayId}</small>
             </div>
             <span className={agent.connectedAt ? "status-dot online" : "status-dot"} />
+            <SetupScriptLinks agentId={agent.id} compact />
           </div>
         ))}
       </div>

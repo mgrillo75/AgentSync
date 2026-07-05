@@ -61,6 +61,126 @@ function shellExportBlock(url: string, gatewayId: string, secret: string): strin
   return [`export GATEWAY_RELAY_URL="${url}"`, `export GATEWAY_RELAY_ID="${gatewayId}"`, `export GATEWAY_RELAY_SECRET="${secret}"`].join("\n");
 }
 
+function scriptEnvLines(url: string, gatewayId: string, secret: string): string[] {
+  return [`GATEWAY_RELAY_URL=${url}`, `GATEWAY_RELAY_ID=${gatewayId}`, `GATEWAY_RELAY_SECRET=${secret}`];
+}
+
+function macSetupScript(url: string, gatewayId: string, secret: string): string {
+  const envLines = scriptEnvLines(url, gatewayId, secret);
+  return `#!/bin/sh
+set -u
+
+echo "AgentSync Hermes Gateway setup"
+echo "--------------------------------"
+
+ENV_FILE="$HOME/.hermes/.env"
+mkdir -p "$HOME/.hermes"
+TMP_FILE="$(mktemp)"
+
+if [ -f "$ENV_FILE" ]; then
+  grep -v '^GATEWAY_RELAY_' "$ENV_FILE" > "$TMP_FILE" || true
+fi
+
+cat >> "$TMP_FILE" <<'AGENTSYNC_ENV'
+${envLines.join("\n")}
+AGENTSYNC_ENV
+
+mv "$TMP_FILE" "$ENV_FILE"
+chmod 600 "$ENV_FILE" 2>/dev/null || true
+echo "Wrote AgentSync relay settings to $ENV_FILE"
+
+if command -v hermes >/dev/null 2>&1; then
+  HERMES_CMD="hermes"
+elif [ -x "$HOME/.hermes/hermes-agent/venv/bin/hermes" ]; then
+  HERMES_CMD="$HOME/.hermes/hermes-agent/venv/bin/hermes"
+elif [ -x "$HOME/.hermes/hermes-agent/venv/bin/python" ]; then
+  HERMES_CMD="$HOME/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main"
+else
+  HERMES_CMD="python3 -m hermes_cli.main"
+fi
+
+echo "Using Hermes command: $HERMES_CMD"
+
+set +e
+$HERMES_CMD gateway install
+INSTALL_CODE=$?
+$HERMES_CMD gateway start
+START_CODE=$?
+$HERMES_CMD gateway status
+STATUS_CODE=$?
+set -e
+
+if [ "$INSTALL_CODE" -eq 0 ] && [ "$START_CODE" -eq 0 ]; then
+  echo ""
+  echo "SUCCESS: AgentSync relay is installed and starting."
+  echo "You can close this window. AgentSync should show this agent as connected shortly."
+  exit 0
+fi
+
+echo ""
+echo "SETUP NEEDS ATTENTION"
+echo "install exit code: $INSTALL_CODE"
+echo "start exit code: $START_CODE"
+echo "status exit code: $STATUS_CODE"
+echo "If this keeps failing, send this window text to your AgentSync admin."
+exit 1
+`;
+}
+
+function windowsSetupScript(url: string, gatewayId: string, secret: string): string {
+  const envLines = scriptEnvLines(url, gatewayId, secret)
+    .map((line) => `"${line.replace(/"/g, '`"')}"`)
+    .join(", ");
+  const ps = `$ErrorActionPreference = "Continue"
+Write-Host "AgentSync Hermes Gateway setup"
+Write-Host "--------------------------------"
+
+$dir = Join-Path $env:USERPROFILE ".hermes"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$path = Join-Path $dir ".env"
+$existing = if (Test-Path $path) { Get-Content $path } else { @() }
+$filtered = $existing | Where-Object { $_ -notmatch '^GATEWAY_RELAY_' }
+$relay = @(${envLines})
+($filtered + $relay) | Set-Content -Path $path -Encoding utf8
+Write-Host "Wrote AgentSync relay settings to $path"
+
+$hermes = Get-Command hermes -ErrorAction SilentlyContinue
+if ($hermes) {
+  $cmd = "hermes"
+} else {
+  $venvHermes = Join-Path $env:LOCALAPPDATA "hermes\\hermes-agent\\venv\\Scripts\\hermes.exe"
+  if (Test-Path $venvHermes) { $cmd = $venvHermes } else { $cmd = "hermes" }
+}
+
+& $cmd gateway install
+$installCode = $LASTEXITCODE
+& $cmd gateway start
+$startCode = $LASTEXITCODE
+& $cmd gateway status
+$statusCode = $LASTEXITCODE
+
+if ($installCode -eq 0 -and $startCode -eq 0) {
+  Write-Host ""
+  Write-Host "SUCCESS: AgentSync relay is installed and starting."
+  Write-Host "You can close this window. AgentSync should show this agent as connected shortly."
+  exit 0
+}
+
+Write-Host ""
+Write-Host "SETUP NEEDS ATTENTION"
+Write-Host "install exit code: $installCode"
+Write-Host "start exit code: $startCode"
+Write-Host "status exit code: $statusCode"
+Write-Host "If this keeps failing, send this window text to your AgentSync admin."
+exit 1
+`;
+  const encoded = Buffer.from(ps, "utf16le").toString("base64");
+  return `@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}
+pause
+`;
+}
+
 export async function registerApiRoutes(app: FastifyInstance, store: Store, router: MessageRouter): Promise<void> {
   app.get("/api/health", async () => ({
     ok: true,
@@ -169,8 +289,8 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     const env = envBlock(url, gatewayId, secret);
     const macPath = "~/.hermes/.env";
     const winPath = "%USERPROFILE%\\.hermes\\.env";
-    const macCommands = `mkdir -p ~/.hermes\npython - <<'PY'\nfrom pathlib import Path\npath = Path.home() / ".hermes" / ".env"\nexisting = path.read_text() if path.exists() else ""\nlines = [line for line in existing.splitlines() if not line.startswith("GATEWAY_RELAY_")]\nlines.extend(${JSON.stringify(env.split("\n"))})\npath.write_text("\\n".join(lines) + "\\n")\nPY\nhermes gateway install\nhermes gateway restart`;
-    const windowsCommands = `$dir = Join-Path $env:USERPROFILE ".hermes"\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n$path = Join-Path $dir ".env"\n$existing = if (Test-Path $path) { Get-Content $path } else { @() }\n$filtered = $existing | Where-Object { $_ -notmatch '^GATEWAY_RELAY_' }\n$relay = @(${env.split("\n").map((line) => `"${line}"`).join(", ")})\n($filtered + $relay) | Set-Content -Path $path -Encoding utf8\nhermes gateway install\nhermes gateway restart`;
+    const macCommands = `mkdir -p ~/.hermes\npython - <<'PY'\nfrom pathlib import Path\npath = Path.home() / ".hermes" / ".env"\nexisting = path.read_text() if path.exists() else ""\nlines = [line for line in existing.splitlines() if not line.startswith("GATEWAY_RELAY_")]\nlines.extend(${JSON.stringify(env.split("\n"))})\npath.write_text("\\n".join(lines) + "\\n")\nPY\nhermes gateway install\nhermes gateway start`;
+    const windowsCommands = `$dir = Join-Path $env:USERPROFILE ".hermes"\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n$path = Join-Path $dir ".env"\n$existing = if (Test-Path $path) { Get-Content $path } else { @() }\n$filtered = $existing | Where-Object { $_ -notmatch '^GATEWAY_RELAY_' }\n$relay = @(${env.split("\n").map((line) => `"${line}"`).join(", ")})\n($filtered + $relay) | Set-Content -Path $path -Encoding utf8\nhermes gateway install\nhermes gateway start`;
     return {
       agent: (({ secret: _secret, deliveryKey: _deliveryKey, ...safe }) => safe)(agent),
       relayUrl: url,
@@ -184,9 +304,40 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
       macCommands,
       windowsCommands,
       installCommand: "hermes gateway install",
-      restartCommand: "hermes gateway restart",
-      agentPrompt: `Set up my AgentSync connection without using Nous Portal.\n\nUpdate my Hermes environment file by replacing any existing GATEWAY_RELAY_* lines with:\n\n${env}\n\nThen run:\nhermes gateway install\nhermes gateway restart\n\nIf restart is not available, start the gateway with: hermes gateway\n\nConfirm AgentSync shows this agent as connected.`
+      restartCommand: "hermes gateway start",
+      agentPrompt: `Set up my AgentSync connection without using Nous Portal.\n\nUpdate my Hermes environment file by replacing any existing GATEWAY_RELAY_* lines with:\n\n${env}\n\nThen run:\nhermes gateway install\nhermes gateway start\n\nIf start is not available, start the gateway with: hermes gateway\n\nConfirm AgentSync shows this agent as connected.`
     };
+  });
+
+  app.get("/api/agents/:agentId/setup-script", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { agentId } = request.params as { agentId: string };
+    const { os } = request.query as { os?: string };
+    const agent = await store.getAgentById(agentId);
+    if (!agent || agent.ownerUserId !== user.id) {
+      reply.code(404);
+      return { error: "Agent not found." };
+    }
+
+    const url = relayUrl(request);
+    if (os === "windows") {
+      const script = windowsSetupScript(url, agent.gatewayId, agent.secret);
+      reply
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Disposition", 'attachment; filename="AgentSync-Setup.bat"');
+      return script;
+    }
+
+    if (os === "mac" || !os) {
+      const script = macSetupScript(url, agent.gatewayId, agent.secret);
+      reply
+        .header("Content-Type", "application/x-sh; charset=utf-8")
+        .header("Content-Disposition", 'attachment; filename="AgentSync-Setup.command"');
+      return script;
+    }
+
+    reply.code(400);
+    return { error: "Unsupported setup script OS. Use os=mac or os=windows." };
   });
 
   app.get("/api/agents", async (request) => {
