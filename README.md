@@ -13,9 +13,25 @@ This repo is designed for GitHub auto-deploys to Heroku.
 APP_BASE_URL=https://your-app.herokuapp.com
 COOKIE_SECRET=<long-random-string>
 NODE_ENV=production
+FOUNDER_ACCESS_KEYS="You=ak_generated_key_1,Partner=ak_generated_key_2"
 ```
 
 `DATABASE_URL` is set automatically by the Heroku Postgres add-on. The app can start without it for local smoke tests, but production data will not persist until Postgres is attached.
+
+Generate each founder key locally:
+
+```bash
+node -e "console.log('ak_'+require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+Set or rotate founder keys on Heroku:
+
+```bash
+heroku config:set FOUNDER_ACCESS_KEYS="Miguel=ak_key_for_you,California=ak_key_for_partner" --app agent-sync
+heroku restart --app agent-sync
+```
+
+Founder keys are hashed before they are stored in Postgres. If you change one of the values in `FOUNDER_ACCESS_KEYS`, the server rotates that named founder's access key on the next boot while keeping the same user record, channels, and agents.
 
 Heroku runs:
 

@@ -24,12 +24,54 @@ const app = Fastify({
 const store = createStore();
 await store.init();
 
-if ((await store.listUsers()).length === 0) {
+function accessKeyPreview(token: string): string {
+  return `${token.slice(0, 8)}...${token.slice(-4)}`;
+}
+
+function parseFounderAccessKeys(): Array<{ name: string; token: string }> {
+  const pairs: Array<{ name: string; token: string }> = [];
+  const multi = process.env.FOUNDER_ACCESS_KEYS?.trim();
+  if (multi) {
+    for (const rawPair of multi.split(",")) {
+      const separator = rawPair.indexOf("=");
+      const name = separator >= 0 ? rawPair.slice(0, separator).trim() : "";
+      const token = separator >= 0 ? rawPair.slice(separator + 1).trim() : "";
+      if (!name || token.length < 16) {
+        app.log.warn({ entry: rawPair }, "Skipping malformed FOUNDER_ACCESS_KEYS entry");
+        continue;
+      }
+      pairs.push({ name, token });
+    }
+  }
+
+  const single = process.env.FOUNDER_ACCESS_KEY?.trim();
+  if (single) {
+    if (single.length < 16) {
+      app.log.warn("Skipping malformed FOUNDER_ACCESS_KEY; value is too short");
+    } else {
+      pairs.push({ name: process.env.FOUNDER_ACCESS_KEY_NAME?.trim() || "Founder", token: single });
+    }
+  }
+
+  return pairs;
+}
+
+const founderKeys = parseFounderAccessKeys();
+for (const founderKey of founderKeys) {
+  await store.upsertEnvAccessKey({
+    name: founderKey.name,
+    tokenHash: sha256(founderKey.token),
+    tokenPreview: accessKeyPreview(founderKey.token)
+  });
+  app.log.info({ name: founderKey.name }, "Provisioned founder access key from environment");
+}
+
+if (founderKeys.length === 0 && (await store.listUsers()).length === 0) {
   const token = `ak_${randomSecret(32)}`;
   await store.createUserWithKey({
     name: "Founder",
     tokenHash: sha256(token),
-    tokenPreview: `${token.slice(0, 8)}...${token.slice(-4)}`,
+    tokenPreview: accessKeyPreview(token),
     label: "Founder"
   });
   app.log.warn({ accessKey: token }, "Created Founder access key. It is shown once; copy it now.");

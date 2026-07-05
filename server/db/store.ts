@@ -24,6 +24,11 @@ export interface Store {
     tokenPreview: string;
     label: string;
   }): Promise<{ user: User; accessKey: AccessKey }>;
+  upsertEnvAccessKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+  }): Promise<{ user: User; accessKey: AccessKey }>;
   getUserByAccessKeyHash(tokenHash: string): Promise<User | null>;
   getUserById(id: string): Promise<User | null>;
   listUsers(): Promise<User[]>;
@@ -360,6 +365,68 @@ export class PgStore implements Store {
          values ($1, $2, $3, $4, $5)
          returning *, $6::text as user_name`,
         [keyId, userId, input.tokenHash, input.tokenPreview, input.label, input.name]
+      );
+      return { user: mapUser(userResult.rows[0]), accessKey: mapAccessKey(keyResult.rows[0]) };
+    });
+  }
+
+  async upsertEnvAccessKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+  }): Promise<{ user: User; accessKey: AccessKey }> {
+    const label = `env:${input.name}`;
+    return this.tx(async (client) => {
+      const sameHash = await client.query(
+        `select ak.*, u.name as user_name, u.id as user_id
+         from access_keys ak
+         join users u on u.id = ak.user_id
+         where ak.token_hash = $1 and ak.revoked_at is null
+         limit 1`,
+        [input.tokenHash]
+      );
+      if (sameHash.rows[0]) {
+        const user = await client.query("select * from users where id = $1", [sameHash.rows[0].user_id]);
+        return { user: mapUser(user.rows[0]), accessKey: mapAccessKey(sameHash.rows[0]) };
+      }
+
+      const existingLabel = await client.query(
+        `select ak.*, u.name as user_name, u.id as user_id
+         from access_keys ak
+         join users u on u.id = ak.user_id
+         where ak.label = $1
+         for update of ak`,
+        [label]
+      );
+      if (existingLabel.rows[0]) {
+        const row = existingLabel.rows[0];
+        await client.query("update users set name = $2 where id = $1", [row.user_id, input.name]);
+        const keyResult = await client.query(
+          `update access_keys ak
+           set token_hash = $2,
+               token_preview = $3,
+               label = $4,
+               revoked_at = null
+           from users u
+           where ak.id = $1 and u.id = ak.user_id
+           returning ak.*, u.name as user_name`,
+          [row.id, input.tokenHash, input.tokenPreview, label]
+        );
+        const userResult = await client.query("select * from users where id = $1", [row.user_id]);
+        return { user: mapUser(userResult.rows[0]), accessKey: mapAccessKey(keyResult.rows[0]) };
+      }
+
+      const userId = randomId("usr");
+      const keyId = randomId("key");
+      const userResult = await client.query("insert into users (id, name) values ($1, $2) returning *", [
+        userId,
+        input.name
+      ]);
+      const keyResult = await client.query(
+        `insert into access_keys (id, user_id, token_hash, token_preview, label)
+         values ($1, $2, $3, $4, $5)
+         returning *, $6::text as user_name`,
+        [keyId, userId, input.tokenHash, input.tokenPreview, label, input.name]
       );
       return { user: mapUser(userResult.rows[0]), accessKey: mapAccessKey(keyResult.rows[0]) };
     });
@@ -714,6 +781,40 @@ export class MemoryStore implements Store {
     this.users.set(id, user);
     this.accessKeys.set(accessKey.id, accessKey);
     return { user, accessKey: this.publicAccessKey(accessKey) };
+  }
+
+  async upsertEnvAccessKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+  }): Promise<{ user: User; accessKey: AccessKey }> {
+    const label = `env:${input.name}`;
+    const sameHash = [...this.accessKeys.values()].find((key) => key.tokenHash === input.tokenHash && !key.revokedAt);
+    if (sameHash) {
+      const user = await this.getUserById(sameHash.userId);
+      if (!user) throw new Error("access key user not found");
+      return { user, accessKey: this.publicAccessKey(sameHash) };
+    }
+
+    const existing = [...this.accessKeys.values()].find((key) => key.label === label);
+    if (existing) {
+      const user = this.users.get(existing.userId);
+      if (!user) throw new Error("access key user not found");
+      user.name = input.name;
+      existing.userName = input.name;
+      existing.tokenHash = input.tokenHash;
+      existing.tokenPreview = input.tokenPreview;
+      existing.label = label;
+      existing.revokedAt = null;
+      return { user, accessKey: this.publicAccessKey(existing) };
+    }
+
+    return this.createUserWithKey({
+      name: input.name,
+      tokenHash: input.tokenHash,
+      tokenPreview: input.tokenPreview,
+      label
+    });
   }
 
   async getUserByAccessKeyHash(tokenHash: string): Promise<User | null> {
