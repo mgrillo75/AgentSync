@@ -1,13 +1,32 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { NetworkCanvas } from "./components/NetworkCanvas";
 import { api, browserWsUrl } from "./lib/api";
 import type { Agent, Channel, Config, Message, User } from "./types";
+import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Enrollment = Awaited<ReturnType<typeof api.createEnrollmentToken>>;
+type AppView = "dashboard" | "agents" | "chat";
+
+const navItems: Array<{ id: AppView; label: string; icon: string }> = [
+  { id: "dashboard", label: "Dashboard", icon: "DB" },
+  { id: "agents", label: "Agents", icon: "AG" },
+  { id: "chat", label: "Chat", icon: "CH" }
+];
 
 function copy(text: string) {
   void navigator.clipboard?.writeText(text);
+}
+
+function LogoLockup({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={compact ? "brand-lockup compact" : "brand-lockup"}>
+      <img className="brand-badge" src={waoBadgeUrl} alt="" aria-hidden="true" />
+      <div>
+        <small>WAO</small>
+        <strong>AgentSync</strong>
+      </div>
+    </div>
+  );
 }
 
 function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
@@ -30,12 +49,11 @@ function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
 
   return (
     <section className="auth-card">
-      <p className="eyebrow">Independent relay for Hermes agents</p>
-      <h1 className="brand-title" data-text="AgentSync">
-        AgentSync
-      </h1>
+      <LogoLockup />
+      <p className="eyebrow">Independent relay for connected agents</p>
+      <h1>Command your agent network</h1>
       <p className="hero-copy">
-        Multi-LLM Agent Communication Synchronization 
+        Multi-LLM Agent Communication Synchronization
       </p>
       <form onSubmit={submit} className="auth-form">
         <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" type="email" />
@@ -80,13 +98,13 @@ function ConnectAgentPanel({
     <section className="panel connect-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Step 1</p>
-          <h2>Connect Your Hermes Agent</h2>
+          <p className="eyebrow">Agents</p>
+          <h2>Connect Your Agent</h2>
         </div>
         <button onClick={createToken}>Generate Pairing Token</button>
       </div>
       <p className="muted">
-        Paste the generated prompt into Hermes Desktop or the dashboard chat and let the
+        Paste the generated prompt into your agent workspace and let the
         agent run the setup commands.
       </p>
       {config?.persistence === "memory" ? (
@@ -95,7 +113,7 @@ function ConnectAgentPanel({
       {error ? <p className="error">{error}</p> : null}
       {enrollment ? (
         <div className="command-stack">
-          <label>Paste this into Hermes chat</label>
+          <label>Paste this into your agent chat</label>
           <textarea readOnly value={enrollment.agentPrompt} />
           <button onClick={() => copy(enrollment.agentPrompt)}>Copy Agent Prompt</button>
           <label>CLI fallback</label>
@@ -107,11 +125,12 @@ function ConnectAgentPanel({
         {agents.length === 0 ? <p className="muted">No agents connected yet. Relay URL: {config?.relayUrl ?? "loading..."}</p> : null}
         {agents.map((agent) => (
           <div className="agent-pill" key={agent.id}>
-            <span className={agent.connectedAt ? "status-dot online" : "status-dot"} />
+            <span className="agent-avatar">{initials(agent.displayName)}</span>
             <div>
               <strong>{agent.displayName}</strong>
               <small>{agent.gatewayId}</small>
             </div>
+            <span className={agent.connectedAt ? "status-dot online" : "status-dot"} />
           </div>
         ))}
       </div>
@@ -133,7 +152,7 @@ function ChannelPanel({
   onSelect: (channelId: string) => void;
   onCreated: () => Promise<void>;
 }) {
-  const [name, setName] = useState("Shared Hermes Channel");
+  const [name, setName] = useState("Shared Agent Channel");
   const [inviteEmail, setInviteEmail] = useState("");
   const [error, setError] = useState("");
 
@@ -151,7 +170,7 @@ function ChannelPanel({
 
   return (
     <section className="panel sidebar">
-      <p className="eyebrow">Step 2</p>
+      <p className="eyebrow">Channels</p>
       <h2>Channels</h2>
       <form onSubmit={createChannel} className="stack">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Channel name" />
@@ -165,14 +184,17 @@ function ChannelPanel({
         {error ? <p className="error">{error}</p> : null}
       </form>
       <div className="channel-list">
+        {channels.length === 0 ? <p className="muted">Create a channel to start messaging connected agents.</p> : null}
         {channels.map((channel) => (
           <button
             key={channel.id}
             className={selectedId === channel.id ? "channel-row active" : "channel-row"}
             onClick={() => onSelect(channel.id)}
           >
-            <span>{channel.name}</span>
-            <small>{channel.members.length} members</small>
+            <span>
+              <strong>{channel.name}</strong>
+              <small>{channel.members.length} members</small>
+            </span>
           </button>
         ))}
       </div>
@@ -200,7 +222,7 @@ function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; mes
     return (
       <section className="panel chat-panel empty">
         <h2>Select or create a channel</h2>
-        <p className="muted">Messages typed here are delivered to both connected Hermes agents.</p>
+        <p className="muted">Messages typed here are delivered to connected agents.</p>
       </section>
     );
   }
@@ -209,7 +231,7 @@ function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; mes
     <section className="panel chat-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Step 3</p>
+          <p className="eyebrow">Shared Chat</p>
           <h2>{channel.name}</h2>
         </div>
         {channel.agentStreakCount > 6 ? <span className="badge">Loop guard active</span> : null}
@@ -234,6 +256,165 @@ function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; mes
   );
 }
 
+function initials(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "AG";
+}
+
+function StatCard({
+  label,
+  value,
+  accent,
+  icon,
+  sublabel
+}: {
+  label: string;
+  value: string | number;
+  accent: "teal" | "blue" | "amber" | "purple" | "green";
+  icon: string;
+  sublabel?: string;
+}) {
+  return (
+    <article className={`stat-card ${accent}`}>
+      <span className="stat-icon">{icon}</span>
+      <small>{label}</small>
+      <strong>{value}</strong>
+      {sublabel ? <span>{sublabel}</span> : null}
+    </article>
+  );
+}
+
+function PageHeader({ title, subtitle, live }: { title: string; subtitle: string; live: boolean }) {
+  return (
+    <header className="page-header">
+      <div>
+        <h1>{title}</h1>
+        <p>{subtitle}</p>
+      </div>
+      <span className={live ? "live-pill online" : "live-pill"}>
+        <span className={live ? "status-dot online" : "status-dot"} />
+        {live ? "Live" : "Offline"}
+      </span>
+    </header>
+  );
+}
+
+function AppSidebar({
+  activeView,
+  onChange,
+  user,
+  wsConnected,
+  onLogout
+}: {
+  activeView: AppView;
+  onChange: (view: AppView) => void;
+  user: User;
+  wsConnected: boolean;
+  onLogout: () => void;
+}) {
+  return (
+    <aside className="app-sidebar">
+      <LogoLockup compact />
+      <nav className="nav-list" aria-label="Primary">
+        {navItems.map((item) => (
+          <button key={item.id} className={activeView === item.id ? "nav-item active" : "nav-item"} onClick={() => onChange(item.id)}>
+            <span>{item.icon}</span>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <div className="user-card">
+          <small>Signed in</small>
+          <strong>{user.email}</strong>
+        </div>
+        <button className="secondary full-width" onClick={onLogout}>
+          Sign Out
+        </button>
+        <p className="network-status">
+          <span className={wsConnected ? "status-dot online" : "status-dot"} />
+          {wsConnected ? "Network Active" : "Network Offline"}
+        </p>
+      </div>
+    </aside>
+  );
+}
+
+function DashboardView({
+  agents,
+  channels,
+  messages,
+  wsConnected
+}: {
+  agents: Agent[];
+  channels: Channel[];
+  messages: Message[];
+  wsConnected: boolean;
+}) {
+  const activeAgents = agents.filter((agent) => agent.connectedAt).length;
+  const memberCount = channels.reduce((total, channel) => total + channel.members.length, 0);
+  const latestAgents = agents.slice(0, 6);
+  const latestChannels = channels.slice(0, 5);
+
+  return (
+    <div className="view-stack">
+      <section className="stat-grid">
+        <StatCard label="Active Agents" value={activeAgents} sublabel={`/ ${agents.length}`} accent="green" icon="AG" />
+        <StatCard label="Channels" value={channels.length} accent="blue" icon="CH" />
+        <StatCard label="Messages Loaded" value={messages.length} accent="amber" icon="MS" />
+        <StatCard label="Members" value={memberCount} accent="purple" icon="MB" />
+      </section>
+
+      <section className="dashboard-grid">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Agent Hive</p>
+              <h2>Connected Agents</h2>
+            </div>
+            <span className={wsConnected ? "badge success" : "badge"}>{wsConnected ? "Live" : "Idle"}</span>
+          </div>
+          <div className="agent-tile-grid">
+            {latestAgents.length === 0 ? <p className="muted">No agents connected yet.</p> : null}
+            {latestAgents.map((agent) => (
+              <article className={agent.connectedAt ? "agent-tile online" : "agent-tile"} key={agent.id}>
+                <span className="agent-avatar">{initials(agent.displayName)}</span>
+                <strong>{agent.displayName}</strong>
+                <small>{agent.connectedAt ? "Online" : "Offline"}</small>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Workspaces</p>
+              <h2>Channels</h2>
+            </div>
+          </div>
+          <div className="compact-list">
+            {latestChannels.length === 0 ? <p className="muted">Create your first channel from Chat.</p> : null}
+            {latestChannels.map((channel) => (
+              <article key={channel.id}>
+                <div>
+                  <strong>{channel.name}</strong>
+                  <small>{channel.members.length} members</small>
+                </div>
+                {channel.agentStreakCount > 6 ? <span className="badge warning">Guard</span> : null}
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -242,6 +423,8 @@ export default function App() {
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeView, setActiveView] = useState<AppView>("dashboard");
+  const [wsConnected, setWsConnected] = useState(false);
 
   async function refresh() {
     const [cfg, me] = await Promise.all([api.config(), api.me()]);
@@ -259,6 +442,9 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const ws = new WebSocket(browserWsUrl());
+    ws.onopen = () => setWsConnected(true);
+    ws.onclose = () => setWsConnected(false);
+    ws.onerror = () => setWsConnected(false);
     ws.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.type === "agent_status") {
@@ -281,7 +467,10 @@ export default function App() {
         setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
       }
     };
-    return () => ws.close();
+    return () => {
+      setWsConnected(false);
+      ws.close();
+    };
   }, [user, selectedChannelId]);
 
   useEffect(() => {
@@ -308,10 +497,20 @@ export default function App() {
     await api.sendMessage(selectedChannelId, content);
   }
 
+  async function logout() {
+    await api.logout();
+    setUser(null);
+    setAgents([]);
+    setChannels([]);
+    setMessages([]);
+    setSelectedChannelId(null);
+    setActiveView("dashboard");
+    setWsConnected(false);
+  }
+
   if (loading) {
     return (
       <main className="app-shell">
-        <NetworkCanvas />
         <div className="loading">Loading AgentSync...</div>
       </main>
     );
@@ -319,34 +518,35 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <NetworkCanvas />
-      <div className="vignette" />
       {!user ? (
         <AuthPanel onAuth={refresh} />
       ) : (
-        <div className="dashboard">
-          <header className="topbar">
-            <div>
-              <h1>AgentSync</h1>
-              <p>{user.email}</p>
-            </div>
-            <button
-              className="secondary"
-              onClick={() => {
-                void api.logout().then(() => {
-                  setUser(null);
-                  setAgents([]);
-                  setChannels([]);
-                });
-              }}
-            >
-              Sign Out
-            </button>
-          </header>
-          <div className="grid">
-            <ConnectAgentPanel agents={agents} config={config} onAgentsChanged={reloadLists} />
-            <ChannelPanel channels={channels} selectedId={selectedChannelId} onSelect={setSelectedChannelId} onCreated={reloadLists} />
-            <ChatPanel channel={selectedChannel} messages={messages} onSend={sendMessage} />
+        <div className="dashboard-shell">
+          <AppSidebar activeView={activeView} onChange={setActiveView} user={user} wsConnected={wsConnected} onLogout={() => void logout()} />
+          <div className="main-workspace">
+            {activeView === "dashboard" ? (
+              <>
+                <PageHeader title="Command Center" subtitle="Real-time overview of the AgentSync relay." live={wsConnected} />
+                <DashboardView agents={agents} channels={channels} messages={messages} wsConnected={wsConnected} />
+              </>
+            ) : null}
+
+            {activeView === "agents" ? (
+              <>
+                <PageHeader title="Agents" subtitle="Generate pairing tokens and monitor connected agents." live={wsConnected} />
+                <ConnectAgentPanel agents={agents} config={config} onAgentsChanged={reloadLists} />
+              </>
+            ) : null}
+
+            {activeView === "chat" ? (
+              <>
+                <PageHeader title="Chat" subtitle="Create channels and send shared messages to connected agents." live={wsConnected} />
+                <div className="chat-workspace">
+                  <ChannelPanel channels={channels} selectedId={selectedChannelId} onSelect={setSelectedChannelId} onCreated={reloadLists} />
+                  <ChatPanel channel={selectedChannel} messages={messages} onSend={sendMessage} />
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       )}
