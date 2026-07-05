@@ -1,19 +1,10 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { compare, hash } from "bcryptjs";
 import { randomSecret, sha256 } from "./crypto.js";
 import type { Store } from "./db/store.js";
 import type { User } from "./types.js";
 
 const COOKIE_NAME = "agentsync_session";
 const SESSION_DAYS = 30;
-
-export async function hashPassword(password: string): Promise<string> {
-  return hash(password, 12);
-}
-
-export async function verifyPassword(password: string, passwordHash: string): Promise<boolean> {
-  return compare(password, passwordHash);
-}
 
 export async function createLoginSession(store: Store, reply: FastifyReply, userId: string): Promise<void> {
   const token = randomSecret(32);

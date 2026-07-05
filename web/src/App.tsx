@@ -1,15 +1,17 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
-import type { Agent, Channel, Config, Message, User } from "./types";
+import type { AccessKey, Agent, Channel, Config, Message, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
-type Enrollment = Awaited<ReturnType<typeof api.createEnrollmentToken>>;
-type AppView = "dashboard" | "agents" | "chat";
+type Pairing = Awaited<ReturnType<typeof api.createAgentPairing>>;
+type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
+type AppView = "dashboard" | "agents" | "access" | "chat";
 
 const navItems: Array<{ id: AppView; label: string; icon: string }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
   { id: "agents", label: "Agents", icon: "AG" },
+  { id: "access", label: "Access", icon: "AK" },
   { id: "chat", label: "Chat", icon: "CH" }
 ];
 
@@ -30,20 +32,17 @@ function LogoLockup({ compact = false }: { compact?: boolean }) {
 }
 
 function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
-  const [mode, setMode] = useState<"login" | "register">("register");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [accessKey, setAccessKey] = useState("");
   const [error, setError] = useState("");
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      if (mode === "register") await api.register(email, password);
-      else await api.login(email, password);
+      await api.enterKey(accessKey.trim());
       await onAuth();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed.");
+      setError(err instanceof Error ? err.message : "Access denied.");
     }
   }
 
@@ -53,22 +52,20 @@ function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
       <p className="eyebrow">Independent relay for connected agents</p>
       <h1>Command your agent network</h1>
       <p className="hero-copy">
-        Multi-LLM Agent Communication Synchronization
+        Paste a member access key to enter AgentSync.
       </p>
       <form onSubmit={submit} className="auth-form">
-        <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" type="email" />
         <input
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          placeholder="Password (8+ characters)"
+          value={accessKey}
+          onChange={(event) => setAccessKey(event.target.value)}
+          placeholder="Access key"
           type="password"
+          autoComplete="off"
         />
         {error ? <p className="error">{error}</p> : null}
-        <button type="submit">{mode === "register" ? "Create Account" : "Sign In"}</button>
+        <button type="submit">Enter AgentSync</button>
       </form>
-      <button className="link-button" onClick={() => setMode(mode === "register" ? "login" : "register")}>
-        {mode === "register" ? "Already have an account? Sign in" : "Need an account? Create one"}
-      </button>
+      <p className="muted">The first Founder key is printed once in the server logs.</p>
     </section>
   );
 }
@@ -82,15 +79,17 @@ function ConnectAgentPanel({
   config: Config | null;
   onAgentsChanged: () => Promise<void>;
 }) {
-  const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
+  const [pairing, setPairing] = useState<Pairing | null>(null);
   const [error, setError] = useState("");
 
-  async function createToken() {
+  async function createPairing() {
     setError("");
     try {
-      setEnrollment(await api.createEnrollmentToken());
+      const result = await api.createAgentPairing();
+      setPairing(result);
+      await onAgentsChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create enrollment token.");
+      setError(err instanceof Error ? err.message : "Could not create agent pairing.");
     }
   }
 
@@ -101,24 +100,28 @@ function ConnectAgentPanel({
           <p className="eyebrow">Agents</p>
           <h2>Connect Your Agent</h2>
         </div>
-        <button onClick={createToken}>Generate Pairing Token</button>
+        <button onClick={createPairing}>Generate Pairing</button>
       </div>
       <p className="muted">
         Paste the generated prompt into your agent workspace and let the
-        agent run the setup commands.
+        agent write the relay environment lines. No Nous Portal login is required.
       </p>
       {config?.persistence === "memory" ? (
         <p className="warning">Running without Postgres. Attach Heroku Postgres before real use.</p>
       ) : null}
       {error ? <p className="error">{error}</p> : null}
-      {enrollment ? (
+      {pairing ? (
         <div className="command-stack">
           <label>Paste this into your agent chat</label>
-          <textarea readOnly value={enrollment.agentPrompt} />
-          <button onClick={() => copy(enrollment.agentPrompt)}>Copy Agent Prompt</button>
-          <label>CLI fallback</label>
-          <code>{enrollment.command}</code>
-          <code>{enrollment.installCommand}</code>
+          <textarea readOnly value={pairing.agentPrompt} />
+          <button onClick={() => copy(pairing.agentPrompt)}>Copy Agent Prompt</button>
+          <label>Manual .env lines</label>
+          <code>{pairing.env}</code>
+          <button className="secondary" onClick={() => copy(pairing.env)}>Copy Env Lines</button>
+          <label>macOS/Linux helper</label>
+          <code>{pairing.macCommands}</code>
+          <label>Windows PowerShell helper</label>
+          <code>{pairing.windowsCommands}</code>
         </div>
       ) : null}
       <div className="agent-list">
@@ -141,26 +144,109 @@ function ConnectAgentPanel({
   );
 }
 
+function AccessPanel({
+  accessKeys,
+  onAccessChanged
+}: {
+  accessKeys: AccessKey[];
+  onAccessChanged: () => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [issued, setIssued] = useState<IssuedAccessKey | null>(null);
+  const [error, setError] = useState("");
+
+  async function createKey(event: FormEvent) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    setError("");
+    try {
+      const result = await api.createAccessKey(name.trim());
+      setIssued(result);
+      setName("");
+      await onAccessChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create access key.");
+    }
+  }
+
+  async function revokeKey(accessKeyId: string) {
+    setError("");
+    try {
+      await api.revokeAccessKey(accessKeyId);
+      await onAccessChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not revoke access key.");
+    }
+  }
+
+  return (
+    <section className="panel connect-panel">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Access</p>
+          <h2>Member Keys</h2>
+        </div>
+      </div>
+      <p className="muted">Create a named key for each trusted person. The full key is shown once.</p>
+      <form onSubmit={createKey} className="stack">
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Member name, e.g. Greg" />
+        <button type="submit">Generate Access Key</button>
+      </form>
+      {error ? <p className="error">{error}</p> : null}
+      {issued ? (
+        <div className="command-stack">
+          <label>New key for {issued.user.name}</label>
+          <code>{issued.token}</code>
+          <button onClick={() => copy(issued.token)}>Copy Access Key</button>
+        </div>
+      ) : null}
+      <div className="compact-list">
+        {accessKeys.length === 0 ? <p className="muted">No member keys have been created yet.</p> : null}
+        {accessKeys.map((accessKey) => (
+          <article key={accessKey.id}>
+            <div>
+              <strong>{accessKey.userName}</strong>
+              <small>
+                {accessKey.tokenPreview}
+                {accessKey.lastUsedAt ? ` - used ${new Date(accessKey.lastUsedAt).toLocaleString()}` : " - never used"}
+              </small>
+            </div>
+            {accessKey.revokedAt ? (
+              <span className="badge warning">Revoked</span>
+            ) : (
+              <button className="secondary" onClick={() => void revokeKey(accessKey.id)}>
+                Revoke
+              </button>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ChannelPanel({
   channels,
+  members,
   selectedId,
   onSelect,
   onCreated
 }: {
   channels: Channel[];
+  members: User[];
   selectedId: string | null;
   onSelect: (channelId: string) => void;
   onCreated: () => Promise<void>;
 }) {
   const [name, setName] = useState("Shared Agent Channel");
-  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteUserId, setInviteUserId] = useState("");
   const [error, setError] = useState("");
 
   async function createChannel(event: FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      const result = await api.createChannel(name, inviteEmail);
+      const result = await api.createChannel(name, inviteUserId);
       await onCreated();
       onSelect(result.channel.id);
     } catch (err) {
@@ -174,12 +260,14 @@ function ChannelPanel({
       <h2>Channels</h2>
       <form onSubmit={createChannel} className="stack">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Channel name" />
-        <input
-          value={inviteEmail}
-          onChange={(event) => setInviteEmail(event.target.value)}
-          placeholder="Invite by email (optional)"
-          type="email"
-        />
+        <select value={inviteUserId} onChange={(event) => setInviteUserId(event.target.value)}>
+          <option value="">No extra member</option>
+          {members.map((member) => (
+            <option value={member.id} key={member.id}>
+              Invite {member.name}
+            </option>
+          ))}
+        </select>
         <button type="submit">Create Channel</button>
         {error ? <p className="error">{error}</p> : null}
       </form>
@@ -330,7 +418,7 @@ function AppSidebar({
       <div className="sidebar-footer">
         <div className="user-card">
           <small>Signed in</small>
-          <strong>{user.email}</strong>
+          <strong>{user.name}</strong>
         </div>
         <button className="secondary full-width" onClick={onLogout}>
           Sign Out
@@ -420,6 +508,8 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [members, setMembers] = useState<User[]>([]);
+  const [accessKeys, setAccessKeys] = useState<AccessKey[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -432,6 +522,14 @@ export default function App() {
     setUser(me.user);
     setAgents(me.agents);
     setChannels(me.channels);
+    if (me.user) {
+      const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
+      setMembers(memberResult.members);
+      setAccessKeys(accessKeyResult.accessKeys);
+    } else {
+      setMembers([]);
+      setAccessKeys([]);
+    }
     if (!selectedChannelId && me.channels[0]) setSelectedChannelId(me.channels[0].id);
   }
 
@@ -488,8 +586,17 @@ export default function App() {
 
   async function reloadLists() {
     const me = await api.me();
+    setUser(me.user);
     setAgents(me.agents);
     setChannels(me.channels);
+    if (me.user) {
+      const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
+      setMembers(memberResult.members);
+      setAccessKeys(accessKeyResult.accessKeys);
+    } else {
+      setMembers([]);
+      setAccessKeys([]);
+    }
   }
 
   async function sendMessage(content: string) {
@@ -502,6 +609,8 @@ export default function App() {
     setUser(null);
     setAgents([]);
     setChannels([]);
+    setMembers([]);
+    setAccessKeys([]);
     setMessages([]);
     setSelectedChannelId(null);
     setActiveView("dashboard");
@@ -538,11 +647,24 @@ export default function App() {
               </>
             ) : null}
 
+            {activeView === "access" ? (
+              <>
+                <PageHeader title="Access" subtitle="Generate and revoke member access keys." live={wsConnected} />
+                <AccessPanel accessKeys={accessKeys} onAccessChanged={reloadLists} />
+              </>
+            ) : null}
+
             {activeView === "chat" ? (
               <>
                 <PageHeader title="Chat" subtitle="Create channels and send shared messages to connected agents." live={wsConnected} />
                 <div className="chat-workspace">
-                  <ChannelPanel channels={channels} selectedId={selectedChannelId} onSelect={setSelectedChannelId} onCreated={reloadLists} />
+                  <ChannelPanel
+                    channels={channels}
+                    members={members.filter((member) => member.id !== user.id)}
+                    selectedId={selectedChannelId}
+                    onSelect={setSelectedChannelId}
+                    onCreated={reloadLists}
+                  />
                   <ChatPanel channel={selectedChannel} messages={messages} onSend={sendMessage} />
                 </div>
               </>

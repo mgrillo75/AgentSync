@@ -1,9 +1,10 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
-import { randomSecret, sha256, verifyRelayUpgradeToken } from "../crypto.js";
+import { sha256, verifyRelayUpgradeToken } from "../crypto.js";
 import type { Store } from "../db/store.js";
 import type { BrowserHub } from "../services/browserHub.js";
+import { provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { AgentDelivery } from "../services/messageRouter.js";
 import type { Agent, RelayInboundEvent } from "../types.js";
 
@@ -109,19 +110,11 @@ export class RelayHub implements AgentDelivery {
   } | null> {
     const token = await this.store.redeemEnrollmentToken(sha256(enrollmentToken));
     if (!token) return null;
-    const secret = randomSecret(32);
-    const deliveryKey = randomSecret(32);
-    const agent = await this.store.createAgent({
+    const { agent, secret, deliveryKey } = await provisionAgentForOwner(this.store, {
       ownerUserId: token.ownerUserId,
       gatewayId,
-      displayName: `Hermes ${gatewayId.replace(/^gw-/, "")}`,
-      secret,
-      deliveryKey
+      displayName: `Hermes ${gatewayId.replace(/^gw-/, "")}`
     });
-
-    for (const channel of await this.store.listChannelsForUser(token.ownerUserId)) {
-      await this.store.addChannelMember(channel.id, "agent", agent.id);
-    }
 
     return {
       secret,

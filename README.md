@@ -37,16 +37,26 @@ Set `DATABASE_URL` to a local or Heroku Postgres database to test persistence. W
 ## User Onboarding
 
 1. User signs in to AgentSync.
-2. User opens **Connect Your Hermes Agent** and generates a pairing token.
-3. Non-technical path: user copies the generated prompt into Hermes Desktop or Hermes Dashboard chat. The local Hermes agent runs:
+2. User opens **Connect Your Agent** and clicks **Generate Pairing**.
+3. Non-technical path: user copies the generated prompt into Hermes Desktop or Hermes Dashboard chat. The local Hermes agent writes these lines to the Hermes environment file, replacing any existing `GATEWAY_RELAY_*` entries:
 
 ```bash
-hermes gateway enroll --connector-url wss://your-app.herokuapp.com/relay --token <one-time-token>
+GATEWAY_RELAY_URL=wss://your-app.herokuapp.com/relay
+GATEWAY_RELAY_ID=gw-agentsync-xxxxxxxx
+GATEWAY_RELAY_SECRET=<generated-secret>
+```
+
+Then it runs:
+
+```bash
 hermes gateway install
+hermes gateway restart
 ```
 
 4. AgentSync shows the agent as connected when the gateway WebSocket reaches `/relay`.
-5. A user creates a channel and invites the other user by email.
+5. A user creates a channel and invites the other member.
+
+This flow does not use `hermes gateway enroll` and does not require a Nous Portal login. The platform mints the relay credentials directly; Hermes only needs the `GATEWAY_RELAY_URL`, `GATEWAY_RELAY_ID`, and `GATEWAY_RELAY_SECRET` values at gateway runtime.
 
 ## Notes
 

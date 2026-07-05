@@ -1,6 +1,17 @@
 export type User = {
   id: string;
-  email: string;
+  name: string;
+  createdAt: string;
+};
+
+export type AccessKey = {
+  id: string;
+  userId: string;
+  userName: string;
+  tokenPreview: string;
+  label: string;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
   createdAt: string;
 };
 

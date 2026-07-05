@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { WebSocketServer } from "ws";
+import { randomSecret, sha256 } from "./crypto.js";
 import { createStore } from "./db/store.js";
 import { RelayHub } from "./relay/relayHub.js";
 import { registerApiRoutes } from "./routes/api.js";
@@ -22,6 +23,17 @@ const app = Fastify({
 
 const store = createStore();
 await store.init();
+
+if ((await store.listUsers()).length === 0) {
+  const token = `ak_${randomSecret(32)}`;
+  await store.createUserWithKey({
+    name: "Founder",
+    tokenHash: sha256(token),
+    tokenPreview: `${token.slice(0, 8)}...${token.slice(-4)}`,
+    label: "Founder"
+  });
+  app.log.warn({ accessKey: token }, "Created Founder access key. It is shown once; copy it now.");
+}
 
 if (store.kind === "memory") {
   app.log.warn("DATABASE_URL is not set; using in-memory storage. Attach Heroku Postgres before production use.");

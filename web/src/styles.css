@@ -39,6 +39,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -76,6 +77,7 @@ button.secondary:hover,
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--border);
@@ -87,6 +89,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: rgba(84, 198, 216, 0.72);
   box-shadow: 0 0 0 3px rgba(84, 198, 216, 0.12);
@@ -106,6 +109,7 @@ label {
 code {
   display: block;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.85rem;

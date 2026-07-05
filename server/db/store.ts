@@ -1,5 +1,6 @@
 import { Pool, type PoolClient } from "pg";
 import {
+  type AccessKey,
   type Agent,
   type Channel,
   type ChannelMember,
@@ -12,16 +13,22 @@ import {
 } from "../types.js";
 import { randomId } from "../crypto.js";
 
-type UserWithPassword = User & { passwordHash: string };
-
 export interface Store {
   kind: "postgres" | "memory";
   init(): Promise<void>;
   close(): Promise<void>;
 
-  createUser(email: string, passwordHash: string): Promise<User>;
-  getUserByEmail(email: string): Promise<UserWithPassword | null>;
+  createUserWithKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+    label: string;
+  }): Promise<{ user: User; accessKey: AccessKey }>;
+  getUserByAccessKeyHash(tokenHash: string): Promise<User | null>;
   getUserById(id: string): Promise<User | null>;
+  listUsers(): Promise<User[]>;
+  listAccessKeys(): Promise<AccessKey[]>;
+  revokeAccessKey(accessKeyId: string): Promise<AccessKey | null>;
 
   createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void>;
   getSessionUser(tokenHash: string): Promise<User | null>;
@@ -79,11 +86,44 @@ export interface Store {
   markDeliveryAcked(deliveryId: string): Promise<void>;
 }
 
+const resetPasswordAuthSchema = `
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'users'
+      and column_name = 'password_hash'
+  ) then
+    drop table if exists delivery_queue cascade;
+    drop table if exists messages cascade;
+    drop table if exists channel_members cascade;
+    drop table if exists channels cascade;
+    drop table if exists agents cascade;
+    drop table if exists enroll_tokens cascade;
+    drop table if exists sessions cascade;
+    drop table if exists access_keys cascade;
+    drop table if exists users cascade;
+  end if;
+end $$;
+`;
+
 const schema = `
 create table if not exists users (
   id text primary key,
-  email text not null unique,
-  password_hash text not null,
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists access_keys (
+  id text primary key,
+  user_id text not null references users(id) on delete cascade,
+  token_hash text not null unique,
+  token_preview text not null,
+  label text not null,
+  revoked_at timestamptz,
+  last_used_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -157,6 +197,8 @@ create table if not exists delivery_queue (
   created_at timestamptz not null default now()
 );
 
+create index if not exists idx_access_keys_user on access_keys(user_id);
+create index if not exists idx_access_keys_active on access_keys(user_id) where revoked_at is null;
 create index if not exists idx_sessions_user on sessions(user_id);
 create index if not exists idx_channels_created_by on channels(created_by);
 create index if not exists idx_channel_members_member on channel_members(member_kind, member_id);
@@ -172,7 +214,20 @@ function toIso(value: Date | string | null | undefined): string | null {
 function mapUser(row: any): User {
   return {
     id: row.id,
-    email: row.email,
+    name: row.name,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString()
+  };
+}
+
+function mapAccessKey(row: any): AccessKey {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userName: row.user_name,
+    tokenPreview: row.token_preview,
+    label: row.label,
+    revokedAt: toIso(row.revoked_at),
+    lastUsedAt: toIso(row.last_used_at),
     createdAt: toIso(row.created_at) ?? new Date().toISOString()
   };
 }
@@ -264,6 +319,7 @@ export class PgStore implements Store {
   }
 
   async init(): Promise<void> {
+    await this.pool.query(resetPasswordAuthSchema);
     await this.pool.query(schema);
   }
 
@@ -286,24 +342,86 @@ export class PgStore implements Store {
     }
   }
 
-  async createUser(email: string, passwordHash: string): Promise<User> {
-    const id = randomId("usr");
-    const result = await this.pool.query(
-      "insert into users (id, email, password_hash) values ($1, $2, $3) returning *",
-      [id, email.toLowerCase(), passwordHash]
-    );
-    return mapUser(result.rows[0]);
+  async createUserWithKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+    label: string;
+  }): Promise<{ user: User; accessKey: AccessKey }> {
+    return this.tx(async (client) => {
+      const userId = randomId("usr");
+      const keyId = randomId("key");
+      const userResult = await client.query("insert into users (id, name) values ($1, $2) returning *", [
+        userId,
+        input.name
+      ]);
+      const keyResult = await client.query(
+        `insert into access_keys (id, user_id, token_hash, token_preview, label)
+         values ($1, $2, $3, $4, $5)
+         returning *, $6::text as user_name`,
+        [keyId, userId, input.tokenHash, input.tokenPreview, input.label, input.name]
+      );
+      return { user: mapUser(userResult.rows[0]), accessKey: mapAccessKey(keyResult.rows[0]) };
+    });
   }
 
-  async getUserByEmail(email: string): Promise<UserWithPassword | null> {
-    const result = await this.pool.query("select * from users where email = $1", [email.toLowerCase()]);
-    const row = result.rows[0];
-    return row ? { ...mapUser(row), passwordHash: row.password_hash } : null;
+  async getUserByAccessKeyHash(tokenHash: string): Promise<User | null> {
+    return this.tx(async (client) => {
+      const found = await client.query(
+        `select u.*, ak.id as access_key_id
+         from access_keys ak
+         join users u on u.id = ak.user_id
+         where ak.token_hash = $1 and ak.revoked_at is null
+         for update of ak`,
+        [tokenHash]
+      );
+      const row = found.rows[0];
+      if (!row) return null;
+      await client.query("update access_keys set last_used_at = now() where id = $1", [row.access_key_id]);
+      return mapUser(row);
+    });
   }
 
   async getUserById(id: string): Promise<User | null> {
     const result = await this.pool.query("select * from users where id = $1", [id]);
     return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const result = await this.pool.query(
+      `select distinct u.* from users u
+       join access_keys ak on ak.user_id = u.id
+       where ak.revoked_at is null
+       order by u.created_at`
+    );
+    return result.rows.map(mapUser);
+  }
+
+  async listAccessKeys(): Promise<AccessKey[]> {
+    const result = await this.pool.query(
+      `select ak.*, u.name as user_name
+       from access_keys ak
+       join users u on u.id = ak.user_id
+       order by ak.created_at desc`
+    );
+    return result.rows.map(mapAccessKey);
+  }
+
+  async revokeAccessKey(accessKeyId: string): Promise<AccessKey | null> {
+    return this.tx(async (client) => {
+      const updated = await client.query(
+        `update access_keys ak
+         set revoked_at = coalesce(ak.revoked_at, now())
+         from users u
+         where ak.id = $1 and u.id = ak.user_id
+         returning ak.*, u.name as user_name`,
+        [accessKeyId]
+      );
+      const row = updated.rows[0];
+      if (!row) return null;
+      await client.query("delete from sessions where user_id = $1", [row.user_id]);
+      return mapAccessKey(row);
+    });
   }
 
   async createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
@@ -561,7 +679,8 @@ export class PgStore implements Store {
 
 export class MemoryStore implements Store {
   kind = "memory" as const;
-  private users = new Map<string, UserWithPassword>();
+  private users = new Map<string, User>();
+  private accessKeys = new Map<string, AccessKey & { tokenHash: string }>();
   private sessions = new Map<string, { userId: string; expiresAt: string }>();
   private enrollTokens = new Map<string, EnrollmentToken>();
   private agents = new Map<string, Agent>();
@@ -573,19 +692,67 @@ export class MemoryStore implements Store {
   async init(): Promise<void> {}
   async close(): Promise<void> {}
 
-  async createUser(email: string, passwordHash: string): Promise<User> {
+  async createUserWithKey(input: {
+    name: string;
+    tokenHash: string;
+    tokenPreview: string;
+    label: string;
+  }): Promise<{ user: User; accessKey: AccessKey }> {
     const id = randomId("usr");
-    const user = { id, email: email.toLowerCase(), passwordHash, createdAt: new Date().toISOString() };
+    const user = { id, name: input.name, createdAt: new Date().toISOString() };
+    const accessKey = {
+      id: randomId("key"),
+      userId: id,
+      userName: user.name,
+      tokenHash: input.tokenHash,
+      tokenPreview: input.tokenPreview,
+      label: input.label,
+      revokedAt: null,
+      lastUsedAt: null,
+      createdAt: new Date().toISOString()
+    };
     this.users.set(id, user);
-    return user;
+    this.accessKeys.set(accessKey.id, accessKey);
+    return { user, accessKey: this.publicAccessKey(accessKey) };
   }
 
-  async getUserByEmail(email: string): Promise<UserWithPassword | null> {
-    return [...this.users.values()].find((user) => user.email === email.toLowerCase()) ?? null;
+  async getUserByAccessKeyHash(tokenHash: string): Promise<User | null> {
+    const accessKey = [...this.accessKeys.values()].find((key) => key.tokenHash === tokenHash && !key.revokedAt);
+    if (!accessKey) return null;
+    accessKey.lastUsedAt = new Date().toISOString();
+    return this.getUserById(accessKey.userId);
   }
 
   async getUserById(id: string): Promise<User | null> {
     return this.users.get(id) ?? null;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const activeUserIds = new Set(
+      [...this.accessKeys.values()].filter((accessKey) => !accessKey.revokedAt).map((accessKey) => accessKey.userId)
+    );
+    return [...this.users.values()].filter((user) => activeUserIds.has(user.id));
+  }
+
+  async listAccessKeys(): Promise<AccessKey[]> {
+    return [...this.accessKeys.values()]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .map((accessKey) => this.publicAccessKey(accessKey));
+  }
+
+  async revokeAccessKey(accessKeyId: string): Promise<AccessKey | null> {
+    const accessKey = this.accessKeys.get(accessKeyId);
+    if (!accessKey) return null;
+    accessKey.revokedAt ??= new Date().toISOString();
+    for (const [tokenHash, session] of this.sessions) {
+      if (session.userId === accessKey.userId) this.sessions.delete(tokenHash);
+    }
+    return this.publicAccessKey(accessKey);
+  }
+
+  private publicAccessKey(accessKey: AccessKey & { tokenHash: string }): AccessKey {
+    const { tokenHash: _tokenHash, ...safe } = accessKey;
+    return safe;
   }
 
   async createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {

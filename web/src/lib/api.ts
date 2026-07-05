@@ -1,4 +1,4 @@
-import type { Agent, Channel, Config, Message, User } from "../types";
+import type { AccessKey, Agent, Channel, Config, Message, User } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -17,11 +17,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   config: () => request<Config>("/api/config"),
   me: () => request<{ user: User | null; agents: Agent[]; channels: Channel[] }>("/api/me"),
-  register: (email: string, password: string) =>
-    request<{ user: User }>("/api/register", { method: "POST", body: JSON.stringify({ email, password }) }),
-  login: (email: string, password: string) =>
-    request<{ user: User }>("/api/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  enterKey: (token: string) =>
+    request<{ user: User }>("/api/access", { method: "POST", body: JSON.stringify({ token }) }),
   logout: () => request<{ ok: true }>("/api/logout", { method: "POST" }),
+  listMembers: () => request<{ members: User[] }>("/api/members"),
+  listAccessKeys: () => request<{ accessKeys: AccessKey[] }>("/api/access-keys"),
+  createAccessKey: (name: string) =>
+    request<{ user: User; accessKey: AccessKey; token: string }>("/api/access-keys", {
+      method: "POST",
+      body: JSON.stringify({ name })
+    }),
+  revokeAccessKey: (accessKeyId: string) =>
+    request<{ accessKey: AccessKey }>(`/api/access-keys/${accessKeyId}`, { method: "DELETE" }),
   createEnrollmentToken: () =>
     request<{
       token: string;
@@ -31,12 +38,29 @@ export const api = {
       agentPrompt: string;
       enrollment: unknown;
     }>("/api/enrollment-tokens", { method: "POST", body: JSON.stringify({}) }),
+  createAgentPairing: () =>
+    request<{
+      agent: Agent;
+      relayUrl: string;
+      gatewayId: string;
+      secret: string;
+      deliveryKey: string;
+      env: string;
+      shellExports: string;
+      macPath: string;
+      winPath: string;
+      macCommands: string;
+      windowsCommands: string;
+      installCommand: string;
+      restartCommand: string;
+      agentPrompt: string;
+    }>("/api/agents/pair", { method: "POST", body: JSON.stringify({}) }),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   listChannels: () => request<{ channels: Channel[] }>("/api/channels"),
-  createChannel: (name: string, inviteEmail: string) =>
+  createChannel: (name: string, inviteUserId: string) =>
     request<{ channel: Channel }>("/api/channels", {
       method: "POST",
-      body: JSON.stringify({ name, inviteEmail })
+      body: JSON.stringify({ name, inviteUserId })
     }),
   listMessages: (channelId: string) => request<{ messages: Message[] }>(`/api/channels/${channelId}/messages`),
   sendMessage: (channelId: string, content: string) =>

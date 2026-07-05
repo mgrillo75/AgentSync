@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { clearLoginSession, createLoginSession, currentUser, hashPassword, requireUser, verifyPassword } from "../auth.js";
+import { clearLoginSession, createLoginSession, currentUser, requireUser } from "../auth.js";
 import { randomSecret, sha256 } from "../crypto.js";
 import type { Store } from "../db/store.js";
+import { provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { MessageRouter } from "../services/messageRouter.js";
 
 function publicBaseUrl(request: FastifyRequest): string {
@@ -17,24 +18,29 @@ function relayUrl(request: FastifyRequest): string {
   return `${publicBaseUrl(request).replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/relay`;
 }
 
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
+function accessKeyPreview(token: string): string {
+  return `${token.slice(0, 8)}...${token.slice(-4)}`;
 }
 
-const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8)
+const accessSchema = z.object({
+  token: z.string().trim().min(16)
 });
 
-const loginSchema = registerSchema;
+const createAccessKeySchema = z.object({
+  name: z.string().trim().min(1).max(80)
+});
 
 const createEnrollmentSchema = z.object({
   label: z.string().trim().min(1).max(80).optional()
 });
 
+const createPairingSchema = z.object({
+  displayName: z.string().trim().min(1).max(80).optional()
+});
+
 const createChannelSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  inviteEmail: z.string().email().optional().or(z.literal(""))
+  inviteUserId: z.string().optional().or(z.literal(""))
 });
 
 const createMessageSchema = z.object({
@@ -45,6 +51,14 @@ const createMessageSchema = z.object({
 async function userCanAccessChannel(store: Store, userId: string, channelId: string): Promise<boolean> {
   const channels = await store.listChannelsForUser(userId);
   return channels.some((channel) => channel.id === channelId);
+}
+
+function envBlock(url: string, gatewayId: string, secret: string): string {
+  return [`GATEWAY_RELAY_URL=${url}`, `GATEWAY_RELAY_ID=${gatewayId}`, `GATEWAY_RELAY_SECRET=${secret}`].join("\n");
+}
+
+function shellExportBlock(url: string, gatewayId: string, secret: string): string {
+  return [`export GATEWAY_RELAY_URL="${url}"`, `export GATEWAY_RELAY_ID="${gatewayId}"`, `export GATEWAY_RELAY_SECRET="${secret}"`].join("\n");
 }
 
 export async function registerApiRoutes(app: FastifyInstance, store: Store, router: MessageRouter): Promise<void> {
@@ -71,32 +85,54 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     };
   });
 
-  app.post("/api/register", async (request, reply) => {
-    const body = registerSchema.parse(request.body);
-    const email = normalizeEmail(body.email);
-    if (await store.getUserByEmail(email)) {
-      reply.code(409);
-      return { error: "An account with that email already exists." };
+  app.post("/api/access", async (request, reply) => {
+    const body = accessSchema.parse(request.body);
+    const user = await store.getUserByAccessKeyHash(sha256(body.token));
+    if (!user) {
+      reply.code(401);
+      return { error: "Invalid or revoked access key." };
     }
-    const user = await store.createUser(email, await hashPassword(body.password));
     await createLoginSession(store, reply, user.id);
     return { user };
-  });
-
-  app.post("/api/login", async (request, reply) => {
-    const body = loginSchema.parse(request.body);
-    const user = await store.getUserByEmail(normalizeEmail(body.email));
-    if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
-      reply.code(401);
-      return { error: "Invalid email or password." };
-    }
-    await createLoginSession(store, reply, user.id);
-    return { user: { id: user.id, email: user.email, createdAt: user.createdAt } };
   });
 
   app.post("/api/logout", async (request, reply) => {
     await clearLoginSession(store, request, reply);
     return { ok: true };
+  });
+
+  app.get("/api/members", async (request) => {
+    await requireUser(store, request);
+    return { members: await store.listUsers() };
+  });
+
+  app.get("/api/access-keys", async (request) => {
+    await requireUser(store, request);
+    return { accessKeys: await store.listAccessKeys() };
+  });
+
+  app.post("/api/access-keys", async (request) => {
+    await requireUser(store, request);
+    const body = createAccessKeySchema.parse(request.body);
+    const token = `ak_${randomSecret(32)}`;
+    const result = await store.createUserWithKey({
+      name: body.name,
+      tokenHash: sha256(token),
+      tokenPreview: accessKeyPreview(token),
+      label: body.name
+    });
+    return { ...result, token };
+  });
+
+  app.delete("/api/access-keys/:accessKeyId", async (request, reply) => {
+    await requireUser(store, request);
+    const { accessKeyId } = request.params as { accessKeyId: string };
+    const accessKey = await store.revokeAccessKey(accessKeyId);
+    if (!accessKey) {
+      reply.code(404);
+      return { error: "Access key not found." };
+    }
+    return { accessKey };
   });
 
   app.post("/api/enrollment-tokens", async (request) => {
@@ -117,6 +153,39 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
       command: `hermes gateway enroll --connector-url ${url} --token ${token}`,
       installCommand: "hermes gateway install",
       agentPrompt: `Set up my AgentSync connection. Run: hermes gateway enroll --connector-url ${url} --token ${token} Then run: hermes gateway install Confirm the gateway is running when finished.`
+    };
+  });
+
+  app.post("/api/agents/pair", async (request) => {
+    const user = await requireUser(store, request);
+    const body = createPairingSchema.parse(request.body ?? {});
+    const gatewayId = `gw-agentsync-${randomSecret(6).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase()}`;
+    const { agent, secret, deliveryKey } = await provisionAgentForOwner(store, {
+      ownerUserId: user.id,
+      gatewayId,
+      displayName: body.displayName || `Hermes ${user.name}`
+    });
+    const url = relayUrl(request);
+    const env = envBlock(url, gatewayId, secret);
+    const macPath = "~/.hermes/.env";
+    const winPath = "%USERPROFILE%\\.hermes\\.env";
+    const macCommands = `mkdir -p ~/.hermes\npython - <<'PY'\nfrom pathlib import Path\npath = Path.home() / ".hermes" / ".env"\nexisting = path.read_text() if path.exists() else ""\nlines = [line for line in existing.splitlines() if not line.startswith("GATEWAY_RELAY_")]\nlines.extend(${JSON.stringify(env.split("\n"))})\npath.write_text("\\n".join(lines) + "\\n")\nPY\nhermes gateway install\nhermes gateway restart`;
+    const windowsCommands = `$dir = Join-Path $env:USERPROFILE ".hermes"\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n$path = Join-Path $dir ".env"\n$existing = if (Test-Path $path) { Get-Content $path } else { @() }\n$filtered = $existing | Where-Object { $_ -notmatch '^GATEWAY_RELAY_' }\n$relay = @(${env.split("\n").map((line) => `"${line}"`).join(", ")})\n($filtered + $relay) | Set-Content -Path $path -Encoding utf8\nhermes gateway install\nhermes gateway restart`;
+    return {
+      agent: (({ secret: _secret, deliveryKey: _deliveryKey, ...safe }) => safe)(agent),
+      relayUrl: url,
+      gatewayId,
+      secret,
+      deliveryKey,
+      env,
+      shellExports: shellExportBlock(url, gatewayId, secret),
+      macPath,
+      winPath,
+      macCommands,
+      windowsCommands,
+      installCommand: "hermes gateway install",
+      restartCommand: "hermes gateway restart",
+      agentPrompt: `Set up my AgentSync connection without using Nous Portal.\n\nUpdate my Hermes environment file by replacing any existing GATEWAY_RELAY_* lines with:\n\n${env}\n\nThen run:\nhermes gateway install\nhermes gateway restart\n\nIf restart is not available, start the gateway with: hermes gateway\n\nConfirm AgentSync shows this agent as connected.`
     };
   });
 
@@ -141,8 +210,8 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
       await store.addChannelMember(channel.id, "agent", agent.id);
     }
 
-    if (body.inviteEmail) {
-      const invitee = await store.getUserByEmail(normalizeEmail(body.inviteEmail));
+    if (body.inviteUserId) {
+      const invitee = await store.getUserById(body.inviteUserId);
       if (invitee) {
         await store.addChannelMember(channel.id, "user", invitee.id);
         for (const agent of await store.listAgentsForUser(invitee.id)) {
@@ -175,7 +244,7 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     const message = await router.routeHumanMessage({
       channelId,
       userId: user.id,
-      userName: user.email,
+      userName: user.name,
       content: body.content,
       replyToMessageId: body.replyToMessageId
     });

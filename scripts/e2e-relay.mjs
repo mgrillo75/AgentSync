@@ -3,6 +3,7 @@ import WebSocket from "ws";
 
 const baseUrl = process.env.E2E_BASE_URL || "http://localhost:3100";
 const relayUrl = baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:") + "/relay";
+const founderAccessKey = process.env.E2E_ACCESS_KEY;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -36,12 +37,21 @@ async function json(path, options = {}) {
   return { response, body };
 }
 
-async function register(email) {
-  const { response } = await json("/api/register", {
+async function enterAccessKey(token) {
+  const { response, body } = await json("/api/access", {
     method: "POST",
-    body: JSON.stringify({ email, password: "password123" })
+    body: JSON.stringify({ token })
   });
-  return cookieFrom(response);
+  return { cookie: cookieFrom(response), user: body.user };
+}
+
+async function createAccessKey(cookie, name) {
+  const { body } = await json("/api/access-keys", {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: JSON.stringify({ name })
+  });
+  return body.token;
 }
 
 async function createEnrollment(cookie) {
@@ -59,6 +69,16 @@ async function enroll(token, gatewayId) {
     headers: { Authorization: "Bearer local-e2e" },
     body: JSON.stringify({ enrollmentToken: token, gatewayId })
   });
+  return body;
+}
+
+async function createPairing(cookie) {
+  const { body } = await json("/api/agents/pair", {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: "{}"
+  });
+  assert(body.gatewayId && body.secret && body.env, "pairing response missing credentials");
   return body;
 }
 
@@ -132,19 +152,25 @@ class RelayClient {
 }
 
 const unique = Date.now();
-const caCookie = await register(`ca-${unique}@example.com`);
-const txCookie = await register(`tx-${unique}@example.com`);
-const caEnroll = await enroll(await createEnrollment(caCookie), `gw-ca-${unique}`);
+assert(founderAccessKey, "Set E2E_ACCESS_KEY to a Founder/member key before running relay E2E");
+const founder = await enterAccessKey(founderAccessKey);
+const caToken = await createAccessKey(founder.cookie, `California ${unique}`);
+const txToken = await createAccessKey(founder.cookie, `Texas ${unique}`);
+const caMember = await enterAccessKey(caToken);
+const txMember = await enterAccessKey(txToken);
+const caCookie = caMember.cookie;
+const txCookie = txMember.cookie;
+const caPair = await createPairing(caCookie);
 const txEnroll = await enroll(await createEnrollment(txCookie), `gw-tx-${unique}`);
 
 const { body: channelBody } = await json("/api/channels", {
   method: "POST",
   headers: { Cookie: caCookie },
-  body: JSON.stringify({ name: "E2E Shared Channel", inviteEmail: `tx-${unique}@example.com` })
+  body: JSON.stringify({ name: "E2E Shared Channel", inviteUserId: txMember.user.id })
 });
 const channel = channelBody.channel;
 
-const ca = new RelayClient("California", caEnroll.gatewayId, caEnroll.secret);
+const ca = new RelayClient("California", caPair.gatewayId, caPair.secret);
 const tx = new RelayClient("Texas", txEnroll.gatewayId, txEnroll.secret);
 await Promise.all([ca.open(), tx.open()]);
 
@@ -181,6 +207,6 @@ tx.close();
 
 console.log("Relay E2E passed:", {
   channelId: channel.id,
-  caGateway: caEnroll.gatewayId,
+  caGateway: caPair.gatewayId,
   txGateway: txEnroll.gatewayId
 });
