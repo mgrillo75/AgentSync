@@ -102,8 +102,8 @@ function ConnectAgentPanel({
         <button onClick={createPairing}>Generate Pairing</button>
       </div>
       <p className="muted">
-        Paste the generated prompt into your agent workspace and let the
-        agent write the relay environment lines. No Nous Portal login is required.
+        Paste the generated prompt into your agent message window and let the
+        agent write the relay environment lines.
       </p>
       {config?.persistence === "memory" ? (
         <p className="warning">Running without Postgres. Attach Heroku Postgres before real use.</p>
