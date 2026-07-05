@@ -65,7 +65,6 @@ function AuthPanel({ onAuth }: { onAuth: () => Promise<void> }) {
         {error ? <p className="error">{error}</p> : null}
         <button type="submit">Enter AgentSync</button>
       </form>
-      <p className="muted">The first Founder key is printed once in the server logs.</p>
     </section>
   );
 }
