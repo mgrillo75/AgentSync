@@ -746,6 +746,357 @@ small {
   justify-content: space-between;
 }
 
+/* Swarm graph */
+.swarm-shell {
+  display: grid;
+  gap: 0.85rem;
+  min-height: calc(100vh - 8.5rem);
+}
+
+.swarm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.swarm-toolbar > div:first-child {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.swarm-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.swarm-canvas {
+  position: relative;
+  min-height: 640px;
+  height: calc(100vh - 12.5rem);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #0a0e17;
+  touch-action: none;
+  user-select: none;
+}
+
+.swarm-grid {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.68;
+  pointer-events: none;
+}
+
+.swarm-layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.swarm-edges {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+}
+
+.swarm-edge-path {
+  stroke: rgba(167, 139, 250, 0.42);
+  stroke-width: 1.8;
+}
+
+.swarm-node-position {
+  position: absolute;
+}
+
+.swarm-node {
+  position: relative;
+  width: 200px;
+  height: 110px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 0.62rem 0.72rem;
+  background: var(--card-soft);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+  cursor: grab;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease,
+    opacity 150ms ease;
+}
+
+.swarm-node.coordinator {
+  border-color: rgba(167, 139, 250, 0.24);
+}
+
+.swarm-node.selected {
+  border-color: rgba(167, 139, 250, 0.5);
+  box-shadow:
+    0 0 0 2px rgba(167, 139, 250, 0.28),
+    0 16px 34px rgba(0, 0, 0, 0.24);
+}
+
+.swarm-node.dragging {
+  opacity: 0.84;
+  transform: scale(1.04);
+  cursor: grabbing;
+  box-shadow:
+    0 0 0 2px rgba(167, 139, 250, 0.2),
+    0 22px 44px rgba(0, 0, 0, 0.32);
+}
+
+.swarm-node-main {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.swarm-node-handle {
+  width: 16px;
+  height: 24px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 5px;
+  padding: 0;
+  background: transparent;
+  color: rgba(181, 191, 206, 0.42);
+  cursor: grab;
+}
+
+.swarm-node-handle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted-strong);
+  transform: none;
+}
+
+.swarm-node-handle:active {
+  cursor: grabbing;
+}
+
+.swarm-avatar {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: rgba(167, 139, 250, 0.13);
+}
+
+.swarm-avatar svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.swarm-avatar.fallback {
+  color: var(--purple);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.swarm-node-title {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.swarm-node-name,
+.swarm-node-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swarm-node-name {
+  color: var(--text);
+  font-size: 0.76rem;
+  line-height: 1.1;
+}
+
+.swarm-node-model {
+  color: rgba(181, 191, 206, 0.54);
+  font-size: 0.58rem;
+  line-height: 1.1;
+}
+
+.swarm-node-desc {
+  display: -webkit-box;
+  margin: 0.42rem 0 0;
+  overflow: hidden;
+  color: rgba(181, 191, 206, 0.66);
+  font-size: 0.66rem;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.swarm-node-badges,
+.swarm-node-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.swarm-node-badges {
+  margin-top: 0.45rem;
+}
+
+.swarm-node-tools {
+  margin-top: 0.38rem;
+  max-height: 16px;
+  overflow: hidden;
+}
+
+.swarm-role-badge {
+  border-radius: 4px;
+  padding: 0.16rem 0.34rem;
+  font-size: 0.55rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.swarm-role-badge.coordinator {
+  background: rgba(167, 139, 250, 0.16);
+  color: var(--purple);
+}
+
+.swarm-role-badge.worker {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted-strong);
+}
+
+.swarm-tool-chip {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  padding: 0.08rem 0.28rem;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(181, 191, 206, 0.58);
+  font-size: 0.5rem;
+  line-height: 1.1;
+}
+
+.swarm-tool-chip.muted {
+  border-color: transparent;
+  background: transparent;
+  color: rgba(181, 191, 206, 0.34);
+}
+
+.swarm-node-status {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #566173;
+}
+
+.swarm-node-delete {
+  position: absolute;
+  right: 0.42rem;
+  bottom: 0.42rem;
+  border: 1px solid rgba(251, 113, 133, 0.24);
+  border-radius: 6px;
+  padding: 0.22rem 0.4rem;
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--danger);
+  font-size: 0.62rem;
+}
+
+.swarm-node-delete:hover {
+  border-color: rgba(251, 113, 133, 0.44);
+  background: rgba(251, 113, 133, 0.16);
+  transform: none;
+}
+
+.swarm-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.55rem;
+  padding: 1.5rem;
+  color: var(--muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+.swarm-empty h3 {
+  margin: 0;
+  color: var(--text);
+}
+
+.swarm-empty p {
+  max-width: 22rem;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.swarm-empty button {
+  pointer-events: auto;
+}
+
+.swarm-modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(3, 6, 12, 0.72);
+}
+
+.swarm-modal {
+  width: min(560px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  background: var(--card);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+}
+
+.swarm-modal label,
+.swarm-avatar-row {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.swarm-avatar-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
 @media (max-width: 1100px) {
   .dashboard-shell {
     grid-template-columns: 1fr;

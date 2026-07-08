@@ -81,6 +81,12 @@ if (store.kind === "memory") {
   app.log.warn("DATABASE_URL is not set; using in-memory storage. Attach Heroku Postgres before production use.");
 }
 
+if (!process.env.KEY_ENCRYPTION_SECRET && !process.env.APP_SECRET && !process.env.COOKIE_SECRET) {
+  app.log.warn(
+    "KEY_ENCRYPTION_SECRET, APP_SECRET, and COOKIE_SECRET are not set; provider keys use the development encryption fallback."
+  );
+}
+
 await app.register(cookie, {
   secret: process.env.COOKIE_SECRET || process.env.APP_SECRET || "dev-cookie-secret-change-me"
 });

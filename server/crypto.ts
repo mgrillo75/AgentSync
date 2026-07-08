@@ -12,6 +12,36 @@ export function sha256(value: string): string {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function encryptionKey(): Buffer {
+  const secret =
+    process.env.KEY_ENCRYPTION_SECRET ||
+    process.env.APP_SECRET ||
+    process.env.COOKIE_SECRET ||
+    "dev-cookie-secret-change-me";
+  return crypto.createHash("sha256").update(secret, "utf8").digest();
+}
+
+export function encryptSecret(plaintext: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+export function decryptSecret(payload: string): string {
+  const [version, ivRaw, tagRaw, cipherRaw] = payload.split(":");
+  if (version !== "v1" || !ivRaw || !tagRaw || !cipherRaw) {
+    throw new Error("Unsupported encrypted secret payload.");
+  }
+  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivRaw, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(cipherRaw, "base64url")),
+    decipher.final()
+  ]).toString("utf8");
+}
+
 export function hmacHex(payload: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(payload, "utf8").digest("hex");
 }

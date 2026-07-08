@@ -1,4 +1,4 @@
-import type { AccessKey, Agent, Channel, Config, Message, User } from "../types";
+import type { AccessKey, Agent, Channel, Config, LlmAgent, Message, ProviderKey, User } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -29,6 +29,39 @@ export const api = {
     }),
   revokeAccessKey: (accessKeyId: string) =>
     request<{ accessKey: AccessKey }>(`/api/access-keys/${accessKeyId}`, { method: "DELETE" }),
+  listProviderKeys: () => request<{ providerKeys: ProviderKey[] }>("/api/provider-keys"),
+  createProviderKey: (input: { provider: string; label?: string; key: string }) =>
+    request<{ providerKey: ProviderKey }>("/api/provider-keys", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  deleteProviderKey: (providerKeyId: string) =>
+    request<{ ok: true }>(`/api/provider-keys/${providerKeyId}`, { method: "DELETE" }),
+  listLlmAgents: () => request<{ llmAgents: LlmAgent[] }>("/api/llm-agents"),
+  createLlmAgent: (input: {
+    name: string;
+    description?: string | null;
+    provider: string;
+    model: string;
+    role: "coordinator" | "worker";
+    tools?: string[];
+    avatarSeed?: string;
+    parentId?: string | null;
+  }) =>
+    request<{ llmAgent: LlmAgent }>("/api/llm-agents", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateLlmAgent: (
+    llmAgentId: string,
+    patch: Partial<Pick<LlmAgent, "name" | "description" | "model" | "role" | "tools" | "parentId" | "x" | "y">>
+  ) =>
+    request<{ llmAgent: LlmAgent }>(`/api/llm-agents/${llmAgentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
+  deleteLlmAgent: (llmAgentId: string) =>
+    request<{ ok: true }>(`/api/llm-agents/${llmAgentId}`, { method: "DELETE" }),
   createEnrollmentToken: () =>
     request<{
       token: string;

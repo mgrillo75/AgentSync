@@ -25,6 +25,34 @@ export type Agent = {
   createdAt: string;
 };
 
+export type LlmAgentRole = "coordinator" | "worker";
+
+export type LlmAgent = {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  description: string | null;
+  provider: string;
+  model: string;
+  role: LlmAgentRole;
+  tools: string[];
+  avatarSeed: string;
+  parentId: string | null;
+  x: number | null;
+  y: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProviderKey = {
+  id: string;
+  ownerUserId: string;
+  provider: string;
+  label: string;
+  keyPreview: string;
+  createdAt: string;
+};
+
 export type ChannelMember = {
   channelId: string;
   memberKind: "user" | "agent";

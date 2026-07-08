@@ -7,7 +7,9 @@ import {
   type ChannelView,
   type Delivery,
   type EnrollmentToken,
+  type LlmAgent,
   type Message,
+  type ProviderKey,
   type RelayInboundEvent,
   type User
 } from "../types.js";
@@ -58,6 +60,35 @@ export interface Store {
   getAgentById(id: string): Promise<Agent | null>;
   listAgentsForUser(userId: string): Promise<Agent[]>;
   setAgentConnected(agentId: string, connected: boolean): Promise<void>;
+
+  upsertProviderKey(input: {
+    ownerUserId: string;
+    provider: string;
+    label: string;
+    encryptedKey: string;
+    keyPreview: string;
+  }): Promise<ProviderKey>;
+  listProviderKeys(ownerUserId: string): Promise<ProviderKey[]>;
+  deleteProviderKey(ownerUserId: string, providerKeyId: string): Promise<boolean>;
+
+  createLlmAgent(input: {
+    ownerUserId: string;
+    name: string;
+    description?: string | null;
+    provider: string;
+    model: string;
+    role: "coordinator" | "worker";
+    tools: string[];
+    avatarSeed: string;
+    parentId?: string | null;
+  }): Promise<LlmAgent>;
+  listLlmAgents(ownerUserId: string): Promise<LlmAgent[]>;
+  getLlmAgentById(id: string): Promise<LlmAgent | null>;
+  updateLlmAgent(
+    id: string,
+    patch: Partial<Pick<LlmAgent, "name" | "description" | "model" | "role" | "tools" | "parentId" | "x" | "y">>
+  ): Promise<LlmAgent | null>;
+  deleteLlmAgent(id: string): Promise<boolean>;
 
   createChannel(input: { name: string; createdBy: string }): Promise<Channel>;
   addChannelMember(channelId: string, memberKind: "user" | "agent", memberId: string): Promise<void>;
@@ -202,6 +233,34 @@ create table if not exists delivery_queue (
   created_at timestamptz not null default now()
 );
 
+create table if not exists provider_keys (
+  id text primary key,
+  owner_user_id text not null references users(id) on delete cascade,
+  provider text not null,
+  label text not null,
+  encrypted_key text not null,
+  key_preview text not null,
+  created_at timestamptz not null default now(),
+  unique (owner_user_id, provider)
+);
+
+create table if not exists llm_agents (
+  id text primary key,
+  owner_user_id text not null references users(id) on delete cascade,
+  name text not null,
+  description text,
+  provider text not null,
+  model text not null,
+  role text not null check (role in ('coordinator','worker')),
+  tools jsonb not null default '[]'::jsonb,
+  avatar_seed text not null,
+  parent_id text references llm_agents(id) on delete set null,
+  x double precision,
+  y double precision,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_access_keys_user on access_keys(user_id);
 create index if not exists idx_access_keys_active on access_keys(user_id) where revoked_at is null;
 create index if not exists idx_sessions_user on sessions(user_id);
@@ -209,6 +268,9 @@ create index if not exists idx_channels_created_by on channels(created_by);
 create index if not exists idx_channel_members_member on channel_members(member_kind, member_id);
 create index if not exists idx_messages_channel_created on messages(channel_id, created_at);
 create index if not exists idx_delivery_pending on delivery_queue(agent_id, acked_at, created_at);
+create index if not exists idx_provider_keys_owner on provider_keys(owner_user_id);
+create index if not exists idx_llm_agents_owner on llm_agents(owner_user_id);
+create index if not exists idx_llm_agents_parent on llm_agents(parent_id);
 `;
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -248,6 +310,50 @@ function mapAgent(row: any): Agent {
     connectedAt: toIso(row.connected_at),
     lastSeenAt: toIso(row.last_seen_at),
     createdAt: toIso(row.created_at) ?? new Date().toISOString()
+  };
+}
+
+function mapProviderKey(row: any): ProviderKey {
+  return {
+    id: row.id,
+    ownerUserId: row.owner_user_id,
+    provider: row.provider,
+    label: row.label,
+    encryptedKey: row.encrypted_key,
+    keyPreview: row.key_preview,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString()
+  };
+}
+
+function parseTools(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function mapLlmAgent(row: any): LlmAgent {
+  return {
+    id: row.id,
+    ownerUserId: row.owner_user_id,
+    name: row.name,
+    description: row.description,
+    provider: row.provider,
+    model: row.model,
+    role: row.role,
+    tools: parseTools(row.tools),
+    avatarSeed: row.avatar_seed,
+    parentId: row.parent_id,
+    x: row.x == null ? null : Number(row.x),
+    y: row.y == null ? null : Number(row.y),
+    createdAt: toIso(row.created_at) ?? new Date().toISOString(),
+    updatedAt: toIso(row.updated_at) ?? new Date().toISOString()
   };
 }
 
@@ -589,6 +695,122 @@ export class PgStore implements Store {
     );
   }
 
+  async upsertProviderKey(input: {
+    ownerUserId: string;
+    provider: string;
+    label: string;
+    encryptedKey: string;
+    keyPreview: string;
+  }): Promise<ProviderKey> {
+    const id = randomId("pk");
+    const result = await this.pool.query(
+      `insert into provider_keys (id, owner_user_id, provider, label, encrypted_key, key_preview)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (owner_user_id, provider) do update set
+         label = excluded.label,
+         encrypted_key = excluded.encrypted_key,
+         key_preview = excluded.key_preview,
+         created_at = now()
+       returning *`,
+      [id, input.ownerUserId, input.provider, input.label, input.encryptedKey, input.keyPreview]
+    );
+    return mapProviderKey(result.rows[0]);
+  }
+
+  async listProviderKeys(ownerUserId: string): Promise<ProviderKey[]> {
+    const result = await this.pool.query(
+      "select * from provider_keys where owner_user_id = $1 order by created_at desc",
+      [ownerUserId]
+    );
+    return result.rows.map(mapProviderKey);
+  }
+
+  async deleteProviderKey(ownerUserId: string, providerKeyId: string): Promise<boolean> {
+    const result = await this.pool.query("delete from provider_keys where id = $1 and owner_user_id = $2", [
+      providerKeyId,
+      ownerUserId
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async createLlmAgent(input: {
+    ownerUserId: string;
+    name: string;
+    description?: string | null;
+    provider: string;
+    model: string;
+    role: "coordinator" | "worker";
+    tools: string[];
+    avatarSeed: string;
+    parentId?: string | null;
+  }): Promise<LlmAgent> {
+    const id = randomId("lag");
+    const result = await this.pool.query(
+      `insert into llm_agents
+       (id, owner_user_id, name, description, provider, model, role, tools, avatar_seed, parent_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       returning *`,
+      [
+        id,
+        input.ownerUserId,
+        input.name,
+        input.description ?? null,
+        input.provider,
+        input.model,
+        input.role,
+        JSON.stringify(input.tools),
+        input.avatarSeed,
+        input.parentId ?? null
+      ]
+    );
+    return mapLlmAgent(result.rows[0]);
+  }
+
+  async listLlmAgents(ownerUserId: string): Promise<LlmAgent[]> {
+    const result = await this.pool.query(
+      "select * from llm_agents where owner_user_id = $1 order by created_at asc",
+      [ownerUserId]
+    );
+    return result.rows.map(mapLlmAgent);
+  }
+
+  async getLlmAgentById(id: string): Promise<LlmAgent | null> {
+    const result = await this.pool.query("select * from llm_agents where id = $1", [id]);
+    return result.rows[0] ? mapLlmAgent(result.rows[0]) : null;
+  }
+
+  async updateLlmAgent(
+    id: string,
+    patch: Partial<Pick<LlmAgent, "name" | "description" | "model" | "role" | "tools" | "parentId" | "x" | "y">>
+  ): Promise<LlmAgent | null> {
+    type LlmAgentPatchKey = keyof Pick<LlmAgent, "name" | "description" | "model" | "role" | "tools" | "parentId" | "x" | "y">;
+    const candidates: Array<{ key: LlmAgentPatchKey; column: string; value: unknown }> = [
+      { key: "name", column: "name", value: patch.name },
+      { key: "description", column: "description", value: patch.description ?? null },
+      { key: "model", column: "model", value: patch.model },
+      { key: "role", column: "role", value: patch.role },
+      { key: "tools", column: "tools", value: patch.tools == null ? undefined : JSON.stringify(patch.tools) },
+      { key: "parentId", column: "parent_id", value: patch.parentId ?? null },
+      { key: "x", column: "x", value: patch.x },
+      { key: "y", column: "y", value: patch.y }
+    ];
+    const columns = candidates.filter((item) => Object.prototype.hasOwnProperty.call(patch, item.key));
+
+    if (columns.length === 0) return this.getLlmAgentById(id);
+
+    const sets = columns.map((item, index) => `${item.column} = $${index + 2}`);
+    const result = await this.pool.query(
+      `update llm_agents set ${sets.join(", ")}, updated_at = now() where id = $1 returning *`,
+      [id, ...columns.map((item) => item.value)]
+    );
+    return result.rows[0] ? mapLlmAgent(result.rows[0]) : null;
+  }
+
+  async deleteLlmAgent(id: string): Promise<boolean> {
+    const result = await this.pool.query("delete from llm_agents where id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async createChannel(input: { name: string; createdBy: string }): Promise<Channel> {
     const id = randomId("chn");
     const result = await this.pool.query(
@@ -751,6 +973,8 @@ export class MemoryStore implements Store {
   private sessions = new Map<string, { userId: string; expiresAt: string }>();
   private enrollTokens = new Map<string, EnrollmentToken>();
   private agents = new Map<string, Agent>();
+  private providerKeys = new Map<string, ProviderKey>();
+  private llmAgents = new Map<string, LlmAgent>();
   private channels = new Map<string, Channel>();
   private channelMembers = new Map<string, ChannelMember>();
   private messages = new Map<string, Message>();
@@ -937,6 +1161,114 @@ export class MemoryStore implements Store {
     const now = new Date().toISOString();
     agent.connectedAt = connected ? now : null;
     agent.lastSeenAt = now;
+  }
+
+  async upsertProviderKey(input: {
+    ownerUserId: string;
+    provider: string;
+    label: string;
+    encryptedKey: string;
+    keyPreview: string;
+  }): Promise<ProviderKey> {
+    const existing = [...this.providerKeys.values()].find(
+      (providerKey) => providerKey.ownerUserId === input.ownerUserId && providerKey.provider === input.provider
+    );
+    const providerKey: ProviderKey = {
+      id: existing?.id ?? randomId("pk"),
+      ownerUserId: input.ownerUserId,
+      provider: input.provider,
+      label: input.label,
+      encryptedKey: input.encryptedKey,
+      keyPreview: input.keyPreview,
+      createdAt: new Date().toISOString()
+    };
+    this.providerKeys.set(providerKey.id, providerKey);
+    return providerKey;
+  }
+
+  async listProviderKeys(ownerUserId: string): Promise<ProviderKey[]> {
+    return [...this.providerKeys.values()]
+      .filter((providerKey) => providerKey.ownerUserId === ownerUserId)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }
+
+  async deleteProviderKey(ownerUserId: string, providerKeyId: string): Promise<boolean> {
+    const providerKey = this.providerKeys.get(providerKeyId);
+    if (!providerKey || providerKey.ownerUserId !== ownerUserId) return false;
+    this.providerKeys.delete(providerKeyId);
+    return true;
+  }
+
+  async createLlmAgent(input: {
+    ownerUserId: string;
+    name: string;
+    description?: string | null;
+    provider: string;
+    model: string;
+    role: "coordinator" | "worker";
+    tools: string[];
+    avatarSeed: string;
+    parentId?: string | null;
+  }): Promise<LlmAgent> {
+    const now = new Date().toISOString();
+    const llmAgent: LlmAgent = {
+      id: randomId("lag"),
+      ownerUserId: input.ownerUserId,
+      name: input.name,
+      description: input.description ?? null,
+      provider: input.provider,
+      model: input.model,
+      role: input.role,
+      tools: [...input.tools],
+      avatarSeed: input.avatarSeed,
+      parentId: input.parentId ?? null,
+      x: null,
+      y: null,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.llmAgents.set(llmAgent.id, llmAgent);
+    return llmAgent;
+  }
+
+  async listLlmAgents(ownerUserId: string): Promise<LlmAgent[]> {
+    return [...this.llmAgents.values()]
+      .filter((llmAgent) => llmAgent.ownerUserId === ownerUserId)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  }
+
+  async getLlmAgentById(id: string): Promise<LlmAgent | null> {
+    return this.llmAgents.get(id) ?? null;
+  }
+
+  async updateLlmAgent(
+    id: string,
+    patch: Partial<Pick<LlmAgent, "name" | "description" | "model" | "role" | "tools" | "parentId" | "x" | "y">>
+  ): Promise<LlmAgent | null> {
+    const llmAgent = this.llmAgents.get(id);
+    if (!llmAgent) return null;
+    if (Object.prototype.hasOwnProperty.call(patch, "name")) llmAgent.name = patch.name ?? llmAgent.name;
+    if (Object.prototype.hasOwnProperty.call(patch, "description")) llmAgent.description = patch.description ?? null;
+    if (Object.prototype.hasOwnProperty.call(patch, "model")) llmAgent.model = patch.model ?? llmAgent.model;
+    if (Object.prototype.hasOwnProperty.call(patch, "role") && patch.role) llmAgent.role = patch.role;
+    if (Object.prototype.hasOwnProperty.call(patch, "tools")) llmAgent.tools = [...(patch.tools ?? [])];
+    if (Object.prototype.hasOwnProperty.call(patch, "parentId")) llmAgent.parentId = patch.parentId ?? null;
+    if (Object.prototype.hasOwnProperty.call(patch, "x")) llmAgent.x = patch.x ?? null;
+    if (Object.prototype.hasOwnProperty.call(patch, "y")) llmAgent.y = patch.y ?? null;
+    llmAgent.updatedAt = new Date().toISOString();
+    return llmAgent;
+  }
+
+  async deleteLlmAgent(id: string): Promise<boolean> {
+    if (!this.llmAgents.delete(id)) return false;
+    const now = new Date().toISOString();
+    for (const llmAgent of this.llmAgents.values()) {
+      if (llmAgent.parentId === id) {
+        llmAgent.parentId = null;
+        llmAgent.updatedAt = now;
+      }
+    }
+    return true;
   }
 
   async createChannel(input: { name: string; createdBy: string }): Promise<Channel> {

@@ -12,11 +12,13 @@ This repo is designed for GitHub auto-deploys to Heroku.
 ```bash
 APP_BASE_URL=https://your-app.herokuapp.com
 COOKIE_SECRET=<long-random-string>
+KEY_ENCRYPTION_SECRET=<long-random-string>
 NODE_ENV=production
 FOUNDER_ACCESS_KEYS="You=ak_generated_key_1,Partner=ak_generated_key_2"
 ```
 
 `DATABASE_URL` is set automatically by the Heroku Postgres add-on. The app can start without it for local smoke tests, but production data will not persist until Postgres is attached.
+Provider API keys are encrypted with `KEY_ENCRYPTION_SECRET`, falling back to `APP_SECRET` and then `COOKIE_SECRET` for development. Changing the encryption secret after keys are stored makes those provider keys undecryptable in a later LLM execution phase.
 
 Generate each founder key locally:
 

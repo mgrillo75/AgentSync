@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { clearLoginSession, createLoginSession, currentUser, requireUser } from "../auth.js";
-import { randomSecret, sha256 } from "../crypto.js";
+import { encryptSecret, randomSecret, sha256 } from "../crypto.js";
 import type { Store } from "../db/store.js";
 import { provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { MessageRouter } from "../services/messageRouter.js";
+import type { ProviderKey } from "../types.js";
 
 function publicBaseUrl(request: FastifyRequest): string {
   const configured = process.env.APP_BASE_URL?.trim();
@@ -22,6 +23,22 @@ function accessKeyPreview(token: string): string {
   return `${token.slice(0, 8)}...${token.slice(-4)}`;
 }
 
+function providerLabel(provider: string): string {
+  return (
+    {
+      openai: "OpenAI",
+      anthropic: "Anthropic",
+      google: "Google",
+      xai: "xAI"
+    }[provider] ?? provider
+  );
+}
+
+function publicProviderKey(providerKey: ProviderKey): Omit<ProviderKey, "encryptedKey"> {
+  const { encryptedKey: _encryptedKey, ...safe } = providerKey;
+  return safe;
+}
+
 const accessSchema = z.object({
   token: z.string().trim().min(16)
 });
@@ -37,6 +54,40 @@ const createEnrollmentSchema = z.object({
 const createPairingSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional()
 });
+
+const providerSchema = z.enum(["openai", "anthropic", "google", "xai"]);
+
+const createProviderKeySchema = z.object({
+  provider: providerSchema,
+  label: z.string().trim().min(1).max(80).optional(),
+  key: z.string().trim().min(1).max(4096)
+});
+
+const agentToolsSchema = z.array(z.string().trim().min(1).max(64)).max(20);
+
+const createLlmAgentSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).optional().nullable(),
+  provider: providerSchema,
+  model: z.string().trim().min(1).max(120),
+  role: z.enum(["coordinator", "worker"]),
+  tools: agentToolsSchema.optional(),
+  avatarSeed: z.string().trim().min(1).max(80).optional(),
+  parentId: z.string().trim().min(1).optional().nullable()
+});
+
+const updateLlmAgentSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().trim().max(500).optional().nullable(),
+    model: z.string().trim().min(1).max(120).optional(),
+    role: z.enum(["coordinator", "worker"]).optional(),
+    tools: agentToolsSchema.optional(),
+    parentId: z.string().trim().min(1).optional().nullable(),
+    x: z.number().finite().optional().nullable(),
+    y: z.number().finite().optional().nullable()
+  })
+  .strict();
 
 const createChannelSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -253,6 +304,121 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
       return { error: "Access key not found." };
     }
     return { accessKey };
+  });
+
+  app.get("/api/provider-keys", async (request) => {
+    const user = await requireUser(store, request);
+    const providerKeys = await store.listProviderKeys(user.id);
+    return { providerKeys: providerKeys.map(publicProviderKey) };
+  });
+
+  app.post("/api/provider-keys", async (request) => {
+    const user = await requireUser(store, request);
+    const body = createProviderKeySchema.parse(request.body);
+    const providerKey = await store.upsertProviderKey({
+      ownerUserId: user.id,
+      provider: body.provider,
+      label: body.label || providerLabel(body.provider),
+      encryptedKey: encryptSecret(body.key),
+      keyPreview: accessKeyPreview(body.key)
+    });
+    return { providerKey: publicProviderKey(providerKey) };
+  });
+
+  app.delete("/api/provider-keys/:providerKeyId", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { providerKeyId } = request.params as { providerKeyId: string };
+    const deleted = await store.deleteProviderKey(user.id, providerKeyId);
+    if (!deleted) {
+      reply.code(404);
+      return { error: "Provider key not found." };
+    }
+    return { ok: true };
+  });
+
+  app.get("/api/llm-agents", async (request) => {
+    const user = await requireUser(store, request);
+    return { llmAgents: await store.listLlmAgents(user.id) };
+  });
+
+  app.post("/api/llm-agents", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const body = createLlmAgentSchema.parse(request.body);
+    const providerKeys = await store.listProviderKeys(user.id);
+    if (!providerKeys.some((providerKey) => providerKey.provider === body.provider)) {
+      reply.code(400);
+      return { error: `Add a ${providerLabel(body.provider)} API key in Providers first.` };
+    }
+
+    if (body.parentId) {
+      const parent = await store.getLlmAgentById(body.parentId);
+      if (!parent || parent.ownerUserId !== user.id || parent.role !== "coordinator") {
+        reply.code(400);
+        return { error: "Reports to must be one of your coordinator agents." };
+      }
+    }
+
+    const llmAgent = await store.createLlmAgent({
+      ownerUserId: user.id,
+      name: body.name,
+      description: body.description || null,
+      provider: body.provider,
+      model: body.model,
+      role: body.role,
+      tools: body.tools ?? [],
+      avatarSeed: body.avatarSeed || randomSecret(8),
+      parentId: body.parentId ?? null
+    });
+    return { llmAgent };
+  });
+
+  app.patch("/api/llm-agents/:llmAgentId", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { llmAgentId } = request.params as { llmAgentId: string };
+    const existing = await store.getLlmAgentById(llmAgentId);
+    if (!existing || existing.ownerUserId !== user.id) {
+      reply.code(404);
+      return { error: "LLM agent not found." };
+    }
+
+    const body = updateLlmAgentSchema.parse(request.body);
+    if (body.parentId === llmAgentId) {
+      reply.code(400);
+      return { error: "An agent cannot report to itself." };
+    }
+    if (body.parentId) {
+      const parent = await store.getLlmAgentById(body.parentId);
+      if (!parent || parent.ownerUserId !== user.id) {
+        reply.code(404);
+        return { error: "LLM agent not found." };
+      }
+      if (parent.role !== "coordinator") {
+        reply.code(400);
+        return { error: "Reports to must be one of your coordinator agents." };
+      }
+    }
+
+    const llmAgent = await store.updateLlmAgent(llmAgentId, {
+      ...body,
+      description: body.description === "" ? null : body.description
+    });
+    if (!llmAgent) {
+      reply.code(404);
+      return { error: "LLM agent not found." };
+    }
+    return { llmAgent };
+  });
+
+  app.delete("/api/llm-agents/:llmAgentId", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { llmAgentId } = request.params as { llmAgentId: string };
+    const existing = await store.getLlmAgentById(llmAgentId);
+    if (!existing || existing.ownerUserId !== user.id) {
+      reply.code(404);
+      return { error: "LLM agent not found." };
+    }
+    await store.deleteLlmAgent(llmAgentId);
+    return { ok: true };
   });
 
   app.post("/api/enrollment-tokens", async (request) => {

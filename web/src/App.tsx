@@ -1,18 +1,22 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
-import type { AccessKey, Agent, Channel, Config, Message, User } from "./types";
+import { PROVIDERS, providerLabel } from "./lib/providers";
+import { SwarmView } from "./components/swarm/SwarmView";
+import type { AccessKey, Agent, Channel, Config, Message, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Pairing = Awaited<ReturnType<typeof api.createAgentPairing>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
-type AppView = "dashboard" | "agents" | "access" | "chat";
+type AppView = "dashboard" | "agents" | "swarm" | "providers" | "access" | "chat";
 
 const navItems: Array<{ id: AppView; label: string; icon: string }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
   { id: "agents", label: "Agents", icon: "AG" },
   { id: "access", label: "Access", icon: "AK" },
-  { id: "chat", label: "Chat", icon: "CH" }
+  { id: "chat", label: "Chat", icon: "CH" },
+  { id: "swarm", label: "Swarm", icon: "SW" },
+  { id: "providers", label: "Providers", icon: "PR" }
 ];
 
 function copy(text: string) {
@@ -237,6 +241,105 @@ function AccessPanel({
                 Revoke
               </button>
             )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ProvidersPanel() {
+  const [providerKeys, setProviderKeys] = useState<ProviderKey[]>([]);
+  const [provider, setProvider] = useState<string>(PROVIDERS[0]?.id ?? "openai");
+  const [label, setLabel] = useState("");
+  const [key, setKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function reloadProviderKeys() {
+    const result = await api.listProviderKeys();
+    setProviderKeys(result.providerKeys);
+  }
+
+  useEffect(() => {
+    void reloadProviderKeys()
+      .catch((err) => setError(err instanceof Error ? err.message : "Could not load provider keys."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function createKey(event: FormEvent) {
+    event.preventDefault();
+    if (!key.trim()) return;
+    setError("");
+    try {
+      await api.createProviderKey({
+        provider,
+        label: label.trim() || undefined,
+        key: key.trim()
+      });
+      setLabel("");
+      setKey("");
+      await reloadProviderKeys();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not store provider key.");
+    }
+  }
+
+  async function deleteKey(providerKeyId: string) {
+    setError("");
+    try {
+      await api.deleteProviderKey(providerKeyId);
+      await reloadProviderKeys();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete provider key.");
+    }
+  }
+
+  return (
+    <section className="panel connect-panel">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Providers</p>
+          <h2>LLM API Keys</h2>
+        </div>
+      </div>
+      <p className="muted">
+        Keys are encrypted at rest and never shown again. Resubmitting a provider replaces its key.
+      </p>
+      <form onSubmit={createKey} className="stack">
+        <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+          {PROVIDERS.map((item) => (
+            <option value={item.id} key={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Label, optional" />
+        <input
+          value={key}
+          onChange={(event) => setKey(event.target.value)}
+          placeholder={`${providerLabel(provider)} API key`}
+          type="password"
+          autoComplete="off"
+        />
+        <button type="submit">Store Provider Key</button>
+      </form>
+      {error ? <p className="error">{error}</p> : null}
+      <div className="compact-list">
+        {!loading && providerKeys.length === 0 ? <p className="muted">No provider keys stored yet.</p> : null}
+        {loading ? <p className="muted">Loading provider keys...</p> : null}
+        {providerKeys.map((providerKey) => (
+          <article key={providerKey.id}>
+            <div>
+              <strong>{providerKey.label || providerLabel(providerKey.provider)}</strong>
+              <small>
+                {providerLabel(providerKey.provider)} - {providerKey.keyPreview} -{" "}
+                {new Date(providerKey.createdAt).toLocaleString()}
+              </small>
+            </div>
+            <button className="secondary" onClick={() => void deleteKey(providerKey.id)}>
+              Delete
+            </button>
           </article>
         ))}
       </div>
@@ -686,6 +789,20 @@ export default function App() {
                   />
                   <ChatPanel channel={selectedChannel} messages={messages} onSend={sendMessage} />
                 </div>
+              </>
+            ) : null}
+
+            {activeView === "swarm" ? (
+              <>
+                <PageHeader title="WAO Agents Orchestration" subtitle="LLM agents coordinator-to-worker relationships." live={wsConnected} />
+                <SwarmView onGoToProviders={() => setActiveView("providers")} />
+              </>
+            ) : null}
+
+            {activeView === "providers" ? (
+              <>
+                <PageHeader title="Providers" subtitle="Store encrypted LLM provider API keys for future agent execution." live={wsConnected} />
+                <ProvidersPanel />
               </>
             ) : null}
           </div>
