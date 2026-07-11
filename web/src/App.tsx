@@ -1,21 +1,21 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
 import { PROVIDERS, providerLabel } from "./lib/providers";
-import { SwarmView } from "./components/swarm/SwarmView";
+import { RelaysView } from "./components/relays/RelaysView";
 import type { AccessKey, Agent, Channel, Config, Message, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Pairing = Awaited<ReturnType<typeof api.createAgentPairing>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
-type AppView = "dashboard" | "agents" | "swarm" | "providers" | "access" | "chat";
+type AppView = "dashboard" | "agents" | "relays" | "providers" | "access" | "chat";
 
 const navItems: Array<{ id: AppView; label: string; icon: string }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
   { id: "agents", label: "Agents", icon: "AG" },
   { id: "access", label: "Access", icon: "AK" },
   { id: "chat", label: "Chat", icon: "CH" },
-  { id: "swarm", label: "Swarm", icon: "SW" },
+  { id: "relays", label: "Relays", icon: "RL" },
   { id: "providers", label: "Providers", icon: "PR" }
 ];
 
@@ -792,12 +792,7 @@ export default function App() {
               </>
             ) : null}
 
-            {activeView === "swarm" ? (
-              <>
-                <PageHeader title="WAO Agents Orchestration" subtitle="LLM agents coordinator-to-worker relationships." live={wsConnected} />
-                <SwarmView onGoToProviders={() => setActiveView("providers")} />
-              </>
-            ) : null}
+            {activeView === "relays" ? <RelaysView agents={agents} /> : null}
 
             {activeView === "providers" ? (
               <>
