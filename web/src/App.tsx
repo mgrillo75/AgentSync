@@ -583,7 +583,7 @@ function DashboardView({
         <div className="panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Agent Hive</p>
+              <p className="eyebrow">Consortium</p>
               <h2>Connected Agents</h2>
             </div>
             <span className={wsConnected ? "badge success" : "badge"}>{wsConnected ? "Live" : "Idle"}</span>
