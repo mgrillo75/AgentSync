@@ -9,7 +9,8 @@ export function RelayNode({
   onSelect,
   onPointerDown,
   onDragHandlePointerDown,
-  onConsumeDragMoved
+  onConsumeDragMoved,
+  onEdit
 }: {
   agent: Agent;
   selected: boolean;
@@ -18,6 +19,7 @@ export function RelayNode({
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
   onDragHandlePointerDown: (event: PointerEvent<HTMLElement>) => void;
   onConsumeDragMoved: () => boolean;
+  onEdit: (agent: Agent) => Promise<void>;
 }) {
   const online = Boolean(agent.connectedAt);
 
@@ -54,7 +56,7 @@ export function RelayNode({
         <AgentAvatar seed={agent.id} name={agent.displayName} />
         <div className="swarm-node-title">
           <strong className="swarm-node-name">{agent.displayName}</strong>
-          <span className="swarm-node-model">{agent.gatewayId}</span>
+          <span className="swarm-node-model">{agent.subtitleAlias ?? agent.gatewayId}</span>
         </div>
         <span
           className="swarm-node-status"
@@ -66,6 +68,17 @@ export function RelayNode({
           }
         />
       </div>
+      <button
+        type="button"
+        className="swarm-node-edit"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          void onEdit(agent);
+        }}
+      >
+        Edit labels
+      </button>
     </article>
   );
 }

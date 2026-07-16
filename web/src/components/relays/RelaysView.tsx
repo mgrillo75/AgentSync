@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NODE_H, NODE_W } from "../../lib/swarmLayout";
+import { api } from "../../lib/api";
 import type { Agent } from "../../types";
 import { RelayNode } from "./RelayNode";
 import { useSwarmDrag } from "./useSwarmDrag";
@@ -23,7 +24,7 @@ function positionBounds(positions: Map<string, { x: number; y: number }>) {
   return { minX, minY, maxX, maxY };
 }
 
-export function RelaysView({ agents }: { agents: Agent[] }) {
+export function RelaysView({ agents, onAgentsChanged }: { agents: Agent[]; onAgentsChanged: () => Promise<void> }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const didInitialFitRef = useRef(false);
   const [positionOverrides, setPositionOverrides] = useState<Map<string, { x: number; y: number }>>(() => new Map());
@@ -31,6 +32,15 @@ export function RelaysView({ agents }: { agents: Agent[] }) {
   const { transform, handlers: panHandlers, zoomIn, zoomOut, fitToScreen } = useSwarmPanZoom();
 
   const onlineAgents = useMemo(() => agents.filter((agent) => agent.connectedAt), [agents]);
+
+  const editAgent = useCallback(async (agent: Agent) => {
+    const displayName = window.prompt("Agent display name", agent.displayName);
+    if (displayName === null || !displayName.trim()) return;
+    const subtitleAlias = window.prompt("Relays subtitle (leave blank to show gateway ID)", agent.subtitleAlias ?? "");
+    if (subtitleAlias === null) return;
+    await api.updateAgent(agent.id, { displayName: displayName.trim(), subtitleAlias: subtitleAlias.trim() || null });
+    await onAgentsChanged();
+  }, [onAgentsChanged]);
 
   const positions = useMemo(() => {
     const map = new Map<string, { x: number; y: number }>();
@@ -160,6 +170,7 @@ export function RelaysView({ agents }: { agents: Agent[] }) {
                   onPointerDown={(event) => startDrag(event, agent.id)}
                   onDragHandlePointerDown={(event) => startDrag(event, agent.id)}
                   onConsumeDragMoved={consumeLastDragMoved}
+                  onEdit={editAgent}
                 />
               </div>
             );

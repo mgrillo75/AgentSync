@@ -207,6 +207,19 @@ const txCookie = txMember.cookie;
 const caAuthorization = await createAuthorization(caCookie);
 const txEnroll = await enroll(await createEnrollment(txCookie), `gw-tx-${unique}`);
 
+const { body: labelBody } = await json(`/api/agents/${caAuthorization.agent.id}`, {
+  method: "PATCH",
+  headers: { Cookie: caCookie },
+  body: JSON.stringify({ displayName: "California Nexus Agent", subtitleAlias: "West relay" })
+});
+assert(labelBody.agent.displayName === "California Nexus Agent", "agent display name was not updated");
+assert(labelBody.agent.subtitleAlias === "West relay", "agent subtitle alias was not updated");
+assert(labelBody.agent.gatewayId === caAuthorization.gatewayId, "agent gateway ID changed during label update");
+
+const { body: accessBody } = await json("/api/access-keys", { headers: { Cookie: founder.cookie } });
+const caAccessKey = accessBody.accessKeys.find((accessKey) => accessKey.userId === caMember.user.id);
+assert(caAccessKey?.agents.some((agent) => agent.id === caAuthorization.agent.id), "Access ownership omitted agent");
+
 const setupResponse = await fetch(`${baseUrl}/api/agents/${caAuthorization.agent.id}/setup-script?os=mac`, {
   headers: { Cookie: caCookie }
 });
@@ -256,7 +269,14 @@ ca.send({
 const result = await ca.waitFor((frame) => frame.type === "outbound_result" && frame.requestId === requestId);
 assert(result.result.success === true, "agent outbound send failed");
 const peerFrame = await tx.waitFor((frame) => frame.type === "inbound" && frame.event.text.includes("California agent"));
-assert(peerFrame.event.source.user_name === "California E2E Agent", "peer inbound author mismatch");
+assert(peerFrame.event.source.user_name === "California Nexus Agent", "peer inbound author mismatch");
+
+const { body: nexusBody } = await json("/api/nexus/graph", { headers: { Cookie: caCookie } });
+assert(nexusBody.member.id === caMember.user.id, "Nexus member mismatch");
+assert(nexusBody.agents.some((agent) => agent.id === caAuthorization.agent.id), "Nexus omitted connected agent");
+assert(nexusBody.links.some((link) =>
+  [link.fromId, link.toId].includes(caMember.user.id) && [link.fromId, link.toId].includes(caAuthorization.agent.id)
+), "Nexus omitted member-agent communication link");
 
 const closePromise = ca.waitForClose();
 const { body: revokeBody } = await json(`/api/agents/${caAuthorization.agent.id}/revoke`, {

@@ -13,6 +13,7 @@ export type AccessKey = {
   revokedAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+  agents?: Agent[];
 };
 
 export type AgentSystemType = "laptop" | "desktop" | "server" | "other";
@@ -22,6 +23,7 @@ export type Agent = {
   ownerUserId: string;
   gatewayId: string;
   displayName: string;
+  subtitleAlias: string | null;
   systemLabel: string | null;
   systemType: AgentSystemType | null;
   agentKind: string | null;
@@ -29,6 +31,21 @@ export type Agent = {
   lastSeenAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+};
+
+export type NexusLink = {
+  fromKind: "user" | "agent";
+  fromId: string;
+  toKind: "user" | "agent";
+  toId: string;
+  lastAt: string;
+  count: number;
+};
+
+export type NexusGraph = {
+  member: User;
+  agents: Agent[];
+  links: NexusLink[];
 };
 
 export type ProviderKey = {

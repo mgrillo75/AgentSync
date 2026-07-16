@@ -7,7 +7,7 @@ import type { RelayHub } from "../relay/relayHub.js";
 import { getAgentSecret, provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { BrowserHub } from "../services/browserHub.js";
 import type { MessageRouter } from "../services/messageRouter.js";
-import type { ProviderKey } from "../types.js";
+import type { Agent, NexusLink, ProviderKey } from "../types.js";
 
 function publicBaseUrl(request: FastifyRequest): string {
   const configured = process.env.APP_BASE_URL?.trim();
@@ -60,6 +60,16 @@ const authorizeAgentSchema = z.object({
   agentKind: z.string().trim().min(1).max(80).optional()
 });
 
+const updateAgentSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(80).optional(),
+    subtitleAlias: z.string().trim().max(120).nullable().optional()
+  })
+  .strict()
+  .refine((value) => value.displayName !== undefined || value.subtitleAlias !== undefined, {
+    message: "Provide a display name or subtitle alias."
+  });
+
 const providerSchema = z.enum(["openai", "anthropic", "google", "xai"]);
 
 const createProviderKeySchema = z.object({
@@ -107,6 +117,11 @@ const createMessageSchema = z.object({
 async function userCanAccessChannel(store: Store, userId: string, channelId: string): Promise<boolean> {
   const channels = await store.listChannelsForUser(userId);
   return channels.some((channel) => channel.id === channelId);
+}
+
+function publicAgent(agent: Agent): Omit<Agent, "secret" | "deliveryKey"> {
+  const { secret: _secret, deliveryKey: _deliveryKey, ...safe } = agent;
+  return safe;
 }
 
 function envBlock(url: string, gatewayId: string, secret: string): string {
@@ -290,7 +305,19 @@ export async function registerApiRoutes(
 
   app.get("/api/access-keys", async (request) => {
     await requireUser(store, request);
-    return { accessKeys: await store.listAccessKeys() };
+    const accessKeys = await store.listAccessKeys();
+    const agentsByUser = new Map<string, Array<Omit<Agent, "secret" | "deliveryKey">>>();
+    await Promise.all(
+      [...new Set(accessKeys.map((accessKey) => accessKey.userId))].map(async (userId) => {
+        const agents = (await store.listAgentsForUser(userId))
+          .filter((agent) => !agent.revokedAt)
+          .map(publicAgent);
+        agentsByUser.set(userId, agents);
+      })
+    );
+    return {
+      accessKeys: accessKeys.map((accessKey) => ({ ...accessKey, agents: agentsByUser.get(accessKey.userId) ?? [] }))
+    };
   });
 
   app.post("/api/access-keys", async (request) => {
@@ -517,6 +544,21 @@ export async function registerApiRoutes(
     return { agent: (({ secret: _secret, deliveryKey: _deliveryKey, ...safe }) => safe)(agent) };
   });
 
+  app.patch("/api/agents/:agentId", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { agentId } = request.params as { agentId: string };
+    const body = updateAgentSchema.parse(request.body);
+    const agent = await store.updateAgent(user.id, agentId, {
+      ...body,
+      ...(body.subtitleAlias !== undefined ? { subtitleAlias: body.subtitleAlias || null } : {})
+    });
+    if (!agent) {
+      reply.code(404);
+      return { error: "Agent not found." };
+    }
+    return { agent: publicAgent(agent) };
+  });
+
   app.get("/api/agents/:agentId/setup-script", async (request, reply) => {
     const user = await requireUser(store, request);
     const { agentId } = request.params as { agentId: string };
@@ -550,8 +592,55 @@ export async function registerApiRoutes(
 
   app.get("/api/agents", async (request) => {
     const user = await requireUser(store, request);
-    const agents = await store.listAgentsForUser(user.id);
-    return { agents: agents.map(({ secret: _secret, deliveryKey: _deliveryKey, ...safe }) => safe) };
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await store.purgeStaleAgents(user.id, cutoff);
+    const agents = (await store.listAgentsForUser(user.id)).filter(
+      (agent) => Boolean(agent.connectedAt) || Boolean(agent.lastSeenAt && Date.parse(agent.lastSeenAt) >= cutoff.getTime())
+    );
+    return { agents: agents.map(publicAgent) };
+  });
+
+  app.get("/api/nexus/graph", async (request) => {
+    const user = await requireUser(store, request);
+    const [ownedAgents, channels] = await Promise.all([
+      store.listAgentsForUser(user.id),
+      store.listChannelsForUser(user.id)
+    ]);
+    const agents = ownedAgents.filter((agent) => Boolean(agent.connectedAt) && !agent.revokedAt);
+    const participants = new Map<string, { kind: "user" | "agent"; id: string }>();
+    participants.set(`user:${user.id}`, { kind: "user", id: user.id });
+    for (const agent of agents) participants.set(`agent:${agent.id}`, { kind: "agent", id: agent.id });
+
+    const linkMap = new Map<string, NexusLink>();
+    for (const channel of channels) {
+      const messages = (await store.listMessages(channel.id, 200)).filter(
+        (message) => message.authorKind !== "system" && participants.has(`${message.authorKind}:${message.authorId}`)
+      );
+      for (let index = 1; index < messages.length; index += 1) {
+        const previous = messages[index - 1];
+        const current = messages[index];
+        if (previous.authorKind === "system" || current.authorKind === "system") continue;
+        const previousKey = `${previous.authorKind}:${previous.authorId}`;
+        const currentKey = `${current.authorKind}:${current.authorId}`;
+        if (previousKey === currentKey) continue;
+        const [fromKey, toKey] = [previousKey, currentKey].sort();
+        const key = `${fromKey}|${toKey}`;
+        const from = participants.get(fromKey);
+        const to = participants.get(toKey);
+        if (!from || !to) continue;
+        const existing = linkMap.get(key);
+        linkMap.set(key, {
+          fromKind: from.kind,
+          fromId: from.id,
+          toKind: to.kind,
+          toId: to.id,
+          lastAt: existing && existing.lastAt > current.createdAt ? existing.lastAt : current.createdAt,
+          count: (existing?.count ?? 0) + 1
+        });
+      }
+    }
+
+    return { member: user, agents: agents.map(publicAgent), links: [...linkMap.values()] };
   });
 
   app.get("/api/channels", async (request) => {

@@ -22,6 +22,7 @@ export type Agent = {
   ownerUserId: string;
   gatewayId: string;
   displayName: string;
+  subtitleAlias: string | null;
   systemLabel: string | null;
   systemType: AgentSystemType | null;
   agentKind: string | null;
@@ -31,6 +32,17 @@ export type Agent = {
   lastSeenAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+};
+
+export type NexusParticipantKind = "user" | "agent";
+
+export type NexusLink = {
+  fromKind: NexusParticipantKind;
+  fromId: string;
+  toKind: NexusParticipantKind;
+  toId: string;
+  lastAt: string;
+  count: number;
 };
 
 export type LlmAgentRole = "coordinator" | "worker";

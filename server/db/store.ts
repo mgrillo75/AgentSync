@@ -62,6 +62,12 @@ export interface Store {
   getAgentByGatewayId(gatewayId: string): Promise<Agent | null>;
   getAgentById(id: string): Promise<Agent | null>;
   listAgentsForUser(userId: string): Promise<Agent[]>;
+  updateAgent(
+    ownerUserId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "displayName" | "subtitleAlias">>
+  ): Promise<Agent | null>;
+  purgeStaleAgents(ownerUserId: string, cutoff: Date): Promise<void>;
   setAgentConnected(agentId: string, connected: boolean): Promise<void>;
   revokeAgent(ownerUserId: string, agentId: string): Promise<Agent | null>;
 
@@ -189,6 +195,7 @@ create table if not exists agents (
   owner_user_id text not null references users(id) on delete cascade,
   gateway_id text not null unique,
   display_name text not null,
+  subtitle_alias text,
   system_label text,
   system_type text,
   agent_kind text,
@@ -281,6 +288,7 @@ create index if not exists idx_llm_agents_owner on llm_agents(owner_user_id);
 create index if not exists idx_llm_agents_parent on llm_agents(parent_id);
 
 alter table agents add column if not exists system_label text;
+alter table agents add column if not exists subtitle_alias text;
 alter table agents add column if not exists system_type text;
 alter table agents add column if not exists agent_kind text;
 alter table agents add column if not exists revoked_at timestamptz;
@@ -318,6 +326,7 @@ function mapAgent(row: any): Agent {
     ownerUserId: row.owner_user_id,
     gatewayId: row.gateway_id,
     displayName: row.display_name,
+    subtitleAlias: row.subtitle_alias ?? null,
     systemLabel: row.system_label ?? null,
     systemType: row.system_type ?? null,
     agentKind: row.agent_kind ?? null,
@@ -721,6 +730,36 @@ export class PgStore implements Store {
   async listAgentsForUser(userId: string): Promise<Agent[]> {
     const result = await this.pool.query("select * from agents where owner_user_id = $1 order by created_at", [userId]);
     return result.rows.map(mapAgent);
+  }
+
+  async updateAgent(
+    ownerUserId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "displayName" | "subtitleAlias">>
+  ): Promise<Agent | null> {
+    const current = await this.getAgentById(agentId);
+    if (!current || current.ownerUserId !== ownerUserId) return null;
+    const result = await this.pool.query(
+      `update agents set display_name = $3, subtitle_alias = $4
+       where id = $1 and owner_user_id = $2 returning *`,
+      [agentId, ownerUserId, patch.displayName ?? current.displayName,
+        Object.prototype.hasOwnProperty.call(patch, "subtitleAlias") ? patch.subtitleAlias ?? null : current.subtitleAlias]
+    );
+    return result.rows[0] ? mapAgent(result.rows[0]) : null;
+  }
+
+  async purgeStaleAgents(ownerUserId: string, cutoff: Date): Promise<void> {
+    await this.tx(async (client) => {
+      const stale = await client.query(
+        `select id from agents where owner_user_id = $1 and connected_at is null
+         and created_at < $2 and (last_seen_at is null or last_seen_at < $2)`,
+        [ownerUserId, cutoff]
+      );
+      const ids = stale.rows.map((row) => row.id as string);
+      if (ids.length === 0) return;
+      await client.query("delete from channel_members where member_kind = 'agent' and member_id = any($1::text[])", [ids]);
+      await client.query("delete from agents where id = any($1::text[])", [ids]);
+    });
   }
 
   async setAgentConnected(agentId: string, connected: boolean): Promise<void> {
@@ -1185,6 +1224,7 @@ export class MemoryStore implements Store {
       ownerUserId: input.ownerUserId,
       gatewayId: input.gatewayId,
       displayName: input.displayName,
+      subtitleAlias: existing?.subtitleAlias ?? null,
       systemLabel: input.systemLabel,
       systemType: input.systemType,
       agentKind: input.agentKind,
@@ -1209,6 +1249,34 @@ export class MemoryStore implements Store {
 
   async listAgentsForUser(userId: string): Promise<Agent[]> {
     return [...this.agents.values()].filter((agent) => agent.ownerUserId === userId);
+  }
+
+  async updateAgent(
+    ownerUserId: string,
+    agentId: string,
+    patch: Partial<Pick<Agent, "displayName" | "subtitleAlias">>
+  ): Promise<Agent | null> {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.ownerUserId !== ownerUserId) return null;
+    if (patch.displayName !== undefined) agent.displayName = patch.displayName;
+    if (Object.prototype.hasOwnProperty.call(patch, "subtitleAlias")) agent.subtitleAlias = patch.subtitleAlias ?? null;
+    return agent;
+  }
+
+  async purgeStaleAgents(ownerUserId: string, cutoff: Date): Promise<void> {
+    const cutoffMs = cutoff.getTime();
+    for (const agent of [...this.agents.values()]) {
+      if (agent.ownerUserId !== ownerUserId || agent.connectedAt) continue;
+      if (Date.parse(agent.createdAt) >= cutoffMs) continue;
+      if (agent.lastSeenAt && Date.parse(agent.lastSeenAt) >= cutoffMs) continue;
+      this.agents.delete(agent.id);
+      for (const [key, member] of this.channelMembers) {
+        if (member.memberKind === "agent" && member.memberId === agent.id) this.channelMembers.delete(key);
+      }
+      for (const [id, delivery] of this.deliveries) {
+        if (delivery.agentId === agent.id) this.deliveries.delete(id);
+      }
+    }
   }
 
   async setAgentConnected(agentId: string, connected: boolean): Promise<void> {

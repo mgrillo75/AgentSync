@@ -2,13 +2,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
+import { NexusView } from "./components/nexus/NexusView";
 import type { AccessKey, Agent, AgentSystemType, Channel, Config, Message, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
-type AppView = "dashboard" | "agents" | "relays" | "providers" | "access" | "chat";
+type AppView = "dashboard" | "agents" | "relays" | "providers" | "nexus" | "access" | "chat";
 
 const navItems: Array<{ id: AppView; label: string; icon: string }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
@@ -16,7 +17,8 @@ const navItems: Array<{ id: AppView; label: string; icon: string }> = [
   { id: "access", label: "Access", icon: "AK" },
   { id: "chat", label: "Chat", icon: "CH" },
   { id: "relays", label: "Relays", icon: "RL" },
-  { id: "providers", label: "Providers", icon: "PR" }
+  { id: "providers", label: "Providers", icon: "PR" },
+  { id: "nexus", label: "Nexus", icon: "NX" }
 ];
 
 function copy(text: string) {
@@ -102,6 +104,14 @@ function ConnectAgentPanel({
   const [systemType, setSystemType] = useState<AgentSystemType>("laptop");
   const [agentKind, setAgentKind] = useState("");
   const [error, setError] = useState("");
+  const visibleAgents = useMemo(() => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return agents.filter((agent) => Boolean(agent.connectedAt) || Boolean(agent.lastSeenAt && Date.parse(agent.lastSeenAt) >= cutoff));
+  }, [agents]);
+
+  useEffect(() => {
+    void api.listAgents().catch(() => undefined);
+  }, []);
 
   async function authorizeAgent(event: FormEvent) {
     event.preventDefault();
@@ -210,12 +220,12 @@ function ConnectAgentPanel({
         </div>
       ) : null}
       <div className="compact-list">
-        {agents.length === 0 ? <p className="muted">No agents authorized yet. Relay URL: {config?.relayUrl ?? "loading..."}</p> : null}
-        {agents.map((agent) => (
+        {visibleAgents.length === 0 ? <p className="muted">No online or recently seen agents. Relay URL: {config?.relayUrl ?? "loading..."}</p> : null}
+        {visibleAgents.map((agent) => (
           <article className={agent.revokedAt ? "revoked" : undefined} key={agent.id}>
             <span className="agent-avatar">{initials(agent.displayName)}</span>
             <div>
-              <strong>{agent.displayName}</strong>
+              <AgentLabelEditor agent={agent} onChanged={onAgentsChanged} />
               <small>
                 {agent.systemLabel ?? "Unknown system"} · {agent.systemType ?? "other"} · authorized {new Date(agent.createdAt).toLocaleString()}
               </small>
@@ -235,6 +245,51 @@ function ConnectAgentPanel({
         ))}
       </div>
     </section>
+  );
+}
+
+function AgentLabelEditor({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [displayName, setDisplayName] = useState(agent.displayName);
+  const [subtitleAlias, setSubtitleAlias] = useState(agent.subtitleAlias ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (editing) return;
+    setDisplayName(agent.displayName);
+    setSubtitleAlias(agent.subtitleAlias ?? "");
+  }, [agent.displayName, agent.subtitleAlias, editing]);
+
+  if (!editing) {
+    return (
+      <div className="agent-label-summary">
+        <strong>{agent.displayName}</strong>
+        <small>{agent.subtitleAlias ?? agent.gatewayId}</small>
+        <button type="button" className="label-edit-button" onClick={() => setEditing(true)}>Edit labels</button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="agent-label-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!displayName.trim()) return;
+        setSaving(true);
+        void api.updateAgent(agent.id, { displayName: displayName.trim(), subtitleAlias: subtitleAlias.trim() || null })
+          .then(onChanged)
+          .then(() => setEditing(false))
+          .finally(() => setSaving(false));
+      }}
+    >
+      <input aria-label="Agent display name" value={displayName} maxLength={80} onChange={(event) => setDisplayName(event.target.value)} required />
+      <input aria-label="Relays subtitle" value={subtitleAlias} maxLength={120} placeholder={agent.gatewayId} onChange={(event) => setSubtitleAlias(event.target.value)} />
+      <div className="agent-label-actions">
+        <button type="submit" disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        <button type="button" className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
@@ -297,14 +352,16 @@ function AccessPanel({
       <div className="compact-list">
         {accessKeys.length === 0 ? <p className="muted">No member keys have been created yet.</p> : null}
         {accessKeys.map((accessKey) => (
-          <article key={accessKey.id}>
-            <div>
+          <article className="access-member-card" key={accessKey.id}>
+            <div className="access-member-row">
+              <span className="access-member-avatar">{initials(accessKey.userName)}</span>
+              <div>
               <strong>{accessKey.userName}</strong>
               <small>
                 {accessKey.tokenPreview}
                 {accessKey.lastUsedAt ? ` - used ${new Date(accessKey.lastUsedAt).toLocaleString()}` : " - never used"}
               </small>
-            </div>
+              </div>
             {accessKey.revokedAt ? (
               <span className="badge warning">Revoked</span>
             ) : (
@@ -312,6 +369,20 @@ function AccessPanel({
                 Revoke
               </button>
             )}
+            </div>
+            <div className="ownership-diagram">
+              <span className="ownership-line" aria-hidden="true" />
+              <div className="ownership-agents">
+                {(accessKey.agents ?? []).length === 0 ? <small className="muted">No agents authorized by this member.</small> : null}
+                {(accessKey.agents ?? []).map((agent) => (
+                  <div className="ownership-agent" key={agent.id}>
+                    <span className="agent-avatar">{initials(agent.displayName)}</span>
+                    <span><strong>{agent.displayName}</strong><small>{agent.subtitleAlias ?? agent.gatewayId}</small></span>
+                    <span className={agent.connectedAt ? "status-dot online" : "status-dot"} title={agent.connectedAt ? "Online" : "Offline"} />
+                  </div>
+                ))}
+              </div>
+            </div>
           </article>
         ))}
       </div>
@@ -873,12 +944,19 @@ export default function App() {
               </>
             ) : null}
 
-            {activeView === "relays" ? <RelaysView agents={agents} /> : null}
+            {activeView === "relays" ? <RelaysView agents={agents} onAgentsChanged={reloadLists} /> : null}
 
             {activeView === "providers" ? (
               <>
                 <PageHeader title="Providers" subtitle="Store encrypted LLM provider API keys for future agent execution." live={wsConnected} />
                 <ProvidersPanel />
+              </>
+            ) : null}
+
+            {activeView === "nexus" ? (
+              <>
+                <PageHeader title="Nexus" subtitle="Explore member, agent, and recent communication relationships." live={wsConnected} />
+                <NexusView />
               </>
             ) : null}
           </div>

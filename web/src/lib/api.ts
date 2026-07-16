@@ -1,4 +1,4 @@
-import type { AccessKey, Agent, Channel, Config, Message, ProviderKey, User } from "../types";
+import type { AccessKey, Agent, Channel, Config, Message, NexusGraph, ProviderKey, User } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -70,8 +70,14 @@ export const api = {
     }>("/api/agents/authorize", { method: "POST", body: JSON.stringify(input) }),
   revokeAgent: (agentId: string) =>
     request<{ agent: Agent }>(`/api/agents/${agentId}/revoke`, { method: "POST", body: JSON.stringify({}) }),
+  updateAgent: (agentId: string, patch: { displayName?: string; subtitleAlias?: string | null }) =>
+    request<{ agent: Agent }>(`/api/agents/${agentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
   setupScriptUrl: (agentId: string, os: "mac" | "windows") => `/api/agents/${agentId}/setup-script?os=${os}`,
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
+  nexusGraph: () => request<NexusGraph>("/api/nexus/graph"),
   listChannels: () => request<{ channels: Channel[] }>("/api/channels"),
   createChannel: (name: string, inviteUserId: string) =>
     request<{ channel: Channel }>("/api/channels", {

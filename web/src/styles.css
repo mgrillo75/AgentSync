@@ -17,6 +17,8 @@
   --green: #34d399;
   --danger: #fb7185;
   --warning: #fbbf24;
+  --nexus-human-border: #39ff14;
+  --nexus-agent-border: #ffffff;
   --shadow: rgba(0, 0, 0, 0.26);
   color: var(--text);
   font-family: "DM Sans", Inter, "Segoe UI", system-ui, sans-serif;
@@ -751,6 +753,126 @@ small {
   opacity: 0.55;
 }
 
+.agent-label-summary {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.label-edit-button,
+.swarm-node-edit {
+  width: max-content;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--teal);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.label-edit-button:hover,
+.swarm-node-edit:hover {
+  background: transparent;
+  color: var(--text);
+  transform: none;
+}
+
+.agent-label-form {
+  display: grid;
+  gap: 0.4rem;
+  width: min(320px, 100%);
+}
+
+.agent-label-form input {
+  padding: 0.48rem 0.58rem;
+  font-size: 0.78rem;
+}
+
+.agent-label-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.agent-label-actions button {
+  padding: 0.38rem 0.55rem;
+  font-size: 0.7rem;
+}
+
+.access-member-card {
+  display: grid !important;
+  gap: 0.75rem !important;
+}
+
+.access-member-row {
+  display: flex !important;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.access-member-row > div {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.access-member-avatar,
+.nexus-human-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(57, 255, 20, 0.45);
+  border-radius: 50%;
+  background: rgba(57, 255, 20, 0.1);
+  color: var(--nexus-human-border);
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 900;
+}
+
+.access-member-avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 0.72rem;
+}
+
+.ownership-diagram {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  padding-left: 18px;
+}
+
+.ownership-line {
+  width: 18px;
+  height: 50%;
+  border-bottom: 1px solid rgba(84, 198, 216, 0.32);
+  border-left: 1px solid rgba(84, 198, 216, 0.32);
+}
+
+.ownership-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ownership-agent {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 180px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  background: #0b111b;
+}
+
+.ownership-agent > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.ownership-agent small {
+  color: var(--muted);
+}
+
 /* Swarm graph */
 .swarm-shell {
   display: grid;
@@ -1016,6 +1138,37 @@ small {
   margin-left: auto;
   border-radius: 50%;
   background: #566173;
+}
+
+.swarm-node-edit {
+  position: absolute;
+  right: 0.72rem;
+  bottom: 0.62rem;
+}
+
+.nexus-node.human {
+  border-color: var(--nexus-human-border);
+  box-shadow: 0 0 18px rgba(57, 255, 20, 0.14), 0 16px 34px rgba(0, 0, 0, 0.22);
+}
+
+.nexus-node.agent {
+  border-color: var(--nexus-agent-border);
+}
+
+.nexus-node .swarm-node-status {
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.55);
+}
+
+.nexus-human-avatar {
+  width: 28px;
+  height: 28px;
+  font-size: 0.58rem;
+}
+
+.nexus-edge {
+  stroke: rgba(84, 198, 216, 0.58);
+  vector-effect: non-scaling-stroke;
 }
 
 .swarm-node-delete {
