@@ -15,13 +15,19 @@ export type AccessKey = {
   createdAt: string;
 };
 
+export type AgentSystemType = "laptop" | "desktop" | "server" | "other";
+
 export type Agent = {
   id: string;
   ownerUserId: string;
   gatewayId: string;
   displayName: string;
+  systemLabel: string | null;
+  systemType: AgentSystemType | null;
+  agentKind: string | null;
   connectedAt: string | null;
   lastSeenAt: string | null;
+  revokedAt: string | null;
   createdAt: string;
 };
 

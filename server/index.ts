@@ -97,7 +97,7 @@ const messageRouter = new MessageRouter(store, browserHub, relayHub);
 relayHub.setRouter(messageRouter);
 
 await registerRelayRoutes(app, relayHub);
-await registerApiRoutes(app, store, messageRouter);
+await registerApiRoutes(app, store, messageRouter, relayHub, browserHub);
 
 await app.register(fastifyStatic, {
   root: webRoot,

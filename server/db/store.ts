@@ -53,6 +53,9 @@ export interface Store {
     ownerUserId: string;
     gatewayId: string;
     displayName: string;
+    systemLabel: string | null;
+    systemType: Agent["systemType"];
+    agentKind: string | null;
     secret: string;
     deliveryKey: string;
   }): Promise<Agent>;
@@ -60,6 +63,7 @@ export interface Store {
   getAgentById(id: string): Promise<Agent | null>;
   listAgentsForUser(userId: string): Promise<Agent[]>;
   setAgentConnected(agentId: string, connected: boolean): Promise<void>;
+  revokeAgent(ownerUserId: string, agentId: string): Promise<Agent | null>;
 
   upsertProviderKey(input: {
     ownerUserId: string;
@@ -185,10 +189,14 @@ create table if not exists agents (
   owner_user_id text not null references users(id) on delete cascade,
   gateway_id text not null unique,
   display_name text not null,
+  system_label text,
+  system_type text,
+  agent_kind text,
   secret text not null,
   delivery_key text not null,
   connected_at timestamptz,
   last_seen_at timestamptz,
+  revoked_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -271,6 +279,11 @@ create index if not exists idx_delivery_pending on delivery_queue(agent_id, acke
 create index if not exists idx_provider_keys_owner on provider_keys(owner_user_id);
 create index if not exists idx_llm_agents_owner on llm_agents(owner_user_id);
 create index if not exists idx_llm_agents_parent on llm_agents(parent_id);
+
+alter table agents add column if not exists system_label text;
+alter table agents add column if not exists system_type text;
+alter table agents add column if not exists agent_kind text;
+alter table agents add column if not exists revoked_at timestamptz;
 `;
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -305,10 +318,14 @@ function mapAgent(row: any): Agent {
     ownerUserId: row.owner_user_id,
     gatewayId: row.gateway_id,
     displayName: row.display_name,
+    systemLabel: row.system_label ?? null,
+    systemType: row.system_type ?? null,
+    agentKind: row.agent_kind ?? null,
     secret: row.secret,
     deliveryKey: row.delivery_key,
     connectedAt: toIso(row.connected_at),
     lastSeenAt: toIso(row.last_seen_at),
+    revokedAt: toIso(row.revoked_at),
     createdAt: toIso(row.created_at) ?? new Date().toISOString()
   };
 }
@@ -653,21 +670,41 @@ export class PgStore implements Store {
     ownerUserId: string;
     gatewayId: string;
     displayName: string;
+    systemLabel: string | null;
+    systemType: Agent["systemType"];
+    agentKind: string | null;
     secret: string;
     deliveryKey: string;
   }): Promise<Agent> {
     const id = randomId("agt");
     const result = await this.pool.query(
-      `insert into agents (id, owner_user_id, gateway_id, display_name, secret, delivery_key)
-       values ($1, $2, $3, $4, $5, $6)
+      `insert into agents (
+         id, owner_user_id, gateway_id, display_name, system_label, system_type, agent_kind, secret, delivery_key
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        on conflict (gateway_id) do update set
          owner_user_id = excluded.owner_user_id,
          display_name = excluded.display_name,
+         system_label = excluded.system_label,
+         system_type = excluded.system_type,
+         agent_kind = excluded.agent_kind,
          secret = excluded.secret,
          delivery_key = excluded.delivery_key
+       where agents.revoked_at is null
        returning *`,
-      [id, input.ownerUserId, input.gatewayId, input.displayName, input.secret, input.deliveryKey]
+      [
+        id,
+        input.ownerUserId,
+        input.gatewayId,
+        input.displayName,
+        input.systemLabel,
+        input.systemType,
+        input.agentKind,
+        input.secret,
+        input.deliveryKey
+      ]
     );
+    if (!result.rows[0]) throw new Error("gateway id belongs to a revoked agent");
     return mapAgent(result.rows[0]);
   }
 
@@ -693,6 +730,17 @@ export class PgStore implements Store {
         : "update agents set connected_at = null, last_seen_at = now() where id = $1",
       [agentId]
     );
+  }
+
+  async revokeAgent(ownerUserId: string, agentId: string): Promise<Agent | null> {
+    const result = await this.pool.query(
+      `update agents
+       set revoked_at = now(), connected_at = null
+       where id = $1 and owner_user_id = $2 and revoked_at is null
+       returning *`,
+      [agentId, ownerUserId]
+    );
+    return result.rows[0] ? mapAgent(result.rows[0]) : null;
   }
 
   async upsertProviderKey(input: {
@@ -858,7 +906,7 @@ export class PgStore implements Store {
     const result = await this.pool.query(
       `select a.* from agents a
        join channel_members cm on cm.member_id = a.id and cm.member_kind = 'agent'
-       where cm.channel_id = $1
+       where cm.channel_id = $1 and a.revoked_at is null
        order by a.created_at`,
       [channelId]
     );
@@ -1124,19 +1172,27 @@ export class MemoryStore implements Store {
     ownerUserId: string;
     gatewayId: string;
     displayName: string;
+    systemLabel: string | null;
+    systemType: Agent["systemType"];
+    agentKind: string | null;
     secret: string;
     deliveryKey: string;
   }): Promise<Agent> {
     const existing = [...this.agents.values()].find((agent) => agent.gatewayId === input.gatewayId);
+    if (existing?.revokedAt) throw new Error("gateway id belongs to a revoked agent");
     const agent: Agent = {
       id: existing?.id ?? randomId("agt"),
       ownerUserId: input.ownerUserId,
       gatewayId: input.gatewayId,
       displayName: input.displayName,
+      systemLabel: input.systemLabel,
+      systemType: input.systemType,
+      agentKind: input.agentKind,
       secret: input.secret,
       deliveryKey: input.deliveryKey,
       connectedAt: existing?.connectedAt ?? null,
       lastSeenAt: existing?.lastSeenAt ?? null,
+      revokedAt: null,
       createdAt: existing?.createdAt ?? new Date().toISOString()
     };
     this.agents.set(agent.id, agent);
@@ -1161,6 +1217,14 @@ export class MemoryStore implements Store {
     const now = new Date().toISOString();
     agent.connectedAt = connected ? now : null;
     agent.lastSeenAt = now;
+  }
+
+  async revokeAgent(ownerUserId: string, agentId: string): Promise<Agent | null> {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.ownerUserId !== ownerUserId || agent.revokedAt) return null;
+    agent.revokedAt = new Date().toISOString();
+    agent.connectedAt = null;
+    return agent;
   }
 
   async upsertProviderKey(input: {
@@ -1316,7 +1380,7 @@ export class MemoryStore implements Store {
     return (await this.getChannelMembers(channelId))
       .filter((member) => member.memberKind === "agent")
       .map((member) => this.agents.get(member.memberId))
-      .filter((agent): agent is Agent => Boolean(agent));
+      .filter((agent): agent is Agent => Boolean(agent && !agent.revokedAt));
   }
 
   async resetChannelAgentStreak(channelId: string): Promise<Channel> {

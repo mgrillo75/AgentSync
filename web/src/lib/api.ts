@@ -46,7 +46,12 @@ export const api = {
       agentPrompt: string;
       enrollment: unknown;
     }>("/api/enrollment-tokens", { method: "POST", body: JSON.stringify({}) }),
-  createAgentPairing: () =>
+  authorizeAgent: (input: {
+    displayName: string;
+    systemLabel: string;
+    systemType: "laptop" | "desktop" | "server" | "other";
+    agentKind?: string;
+  }) =>
     request<{
       agent: Agent;
       relayUrl: string;
@@ -62,7 +67,9 @@ export const api = {
       installCommand: string;
       restartCommand: string;
       agentPrompt: string;
-    }>("/api/agents/pair", { method: "POST", body: JSON.stringify({}) }),
+    }>("/api/agents/authorize", { method: "POST", body: JSON.stringify(input) }),
+  revokeAgent: (agentId: string) =>
+    request<{ agent: Agent }>(`/api/agents/${agentId}/revoke`, { method: "POST", body: JSON.stringify({}) }),
   setupScriptUrl: (agentId: string, os: "mac" | "windows") => `/api/agents/${agentId}/setup-script?os=${os}`,
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   listChannels: () => request<{ channels: Channel[] }>("/api/channels"),

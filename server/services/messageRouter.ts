@@ -109,6 +109,7 @@ export class MessageRouter {
     const event = this.buildInboundEvent(message, channelName);
 
     for (const agent of agents) {
+      if (agent.revokedAt) continue;
       if (agent.id === excludeAgentId) continue;
       const delivery = await this.store.createDelivery({
         agentId: agent.id,

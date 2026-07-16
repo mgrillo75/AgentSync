@@ -3,7 +3,9 @@ import { z } from "zod";
 import { clearLoginSession, createLoginSession, currentUser, requireUser } from "../auth.js";
 import { encryptSecret, randomSecret, sha256 } from "../crypto.js";
 import type { Store } from "../db/store.js";
-import { provisionAgentForOwner } from "../services/agentProvisioning.js";
+import type { RelayHub } from "../relay/relayHub.js";
+import { getAgentSecret, provisionAgentForOwner } from "../services/agentProvisioning.js";
+import type { BrowserHub } from "../services/browserHub.js";
 import type { MessageRouter } from "../services/messageRouter.js";
 import type { ProviderKey } from "../types.js";
 
@@ -51,8 +53,11 @@ const createEnrollmentSchema = z.object({
   label: z.string().trim().min(1).max(80).optional()
 });
 
-const createPairingSchema = z.object({
-  displayName: z.string().trim().min(1).max(80).optional()
+const authorizeAgentSchema = z.object({
+  displayName: z.string().trim().min(1).max(80),
+  systemLabel: z.string().trim().min(1).max(120),
+  systemType: z.enum(["laptop", "desktop", "server", "other"]),
+  agentKind: z.string().trim().min(1).max(80).optional()
 });
 
 const providerSchema = z.enum(["openai", "anthropic", "google", "xai"]);
@@ -232,7 +237,13 @@ pause
 `;
 }
 
-export async function registerApiRoutes(app: FastifyInstance, store: Store, router: MessageRouter): Promise<void> {
+export async function registerApiRoutes(
+  app: FastifyInstance,
+  store: Store,
+  router: MessageRouter,
+  relayHub: RelayHub,
+  browserHub: BrowserHub
+): Promise<void> {
   app.get("/api/health", async () => ({
     ok: true,
     store: store.kind,
@@ -442,15 +453,28 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     };
   });
 
-  app.post("/api/agents/pair", async (request) => {
+  app.post("/api/agents/authorize", async (request, reply) => {
     const user = await requireUser(store, request);
-    const body = createPairingSchema.parse(request.body ?? {});
+    const body = authorizeAgentSchema.parse(request.body);
     const gatewayId = `gw-agentsync-${randomSecret(6).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase()}`;
-    const { agent, secret, deliveryKey } = await provisionAgentForOwner(store, {
-      ownerUserId: user.id,
-      gatewayId,
-      displayName: body.displayName || `Hermes ${user.name}`
-    });
+    let provisioned;
+    try {
+      provisioned = await provisionAgentForOwner(store, {
+        ownerUserId: user.id,
+        gatewayId,
+        displayName: body.displayName,
+        systemLabel: body.systemLabel,
+        systemType: body.systemType,
+        agentKind: body.agentKind ?? null
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "gateway id belongs to a revoked agent") {
+        reply.code(409);
+        return { error: error.message };
+      }
+      throw error;
+    }
+    const { agent, secret, deliveryKey } = provisioned;
     const url = relayUrl(request);
     const env = envBlock(url, gatewayId, secret);
     const macPath = "~/.hermes/.env";
@@ -475,19 +499,37 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     };
   });
 
+  app.post("/api/agents/:agentId/revoke", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { agentId } = request.params as { agentId: string };
+    const agent = await store.revokeAgent(user.id, agentId);
+    if (!agent) {
+      reply.code(404);
+      return { error: "Agent not found." };
+    }
+
+    relayHub.disconnectAgent(agent.id);
+    browserHub.sendToUser(user.id, {
+      type: "agent_revoked",
+      agentId: agent.id,
+      gatewayId: agent.gatewayId
+    });
+    return { agent: (({ secret: _secret, deliveryKey: _deliveryKey, ...safe }) => safe)(agent) };
+  });
+
   app.get("/api/agents/:agentId/setup-script", async (request, reply) => {
     const user = await requireUser(store, request);
     const { agentId } = request.params as { agentId: string };
     const { os } = request.query as { os?: string };
     const agent = await store.getAgentById(agentId);
-    if (!agent || agent.ownerUserId !== user.id) {
+    if (!agent || agent.ownerUserId !== user.id || agent.revokedAt) {
       reply.code(404);
       return { error: "Agent not found." };
     }
 
     const url = relayUrl(request);
     if (os === "windows") {
-      const script = windowsSetupScript(url, agent.gatewayId, agent.secret);
+      const script = windowsSetupScript(url, agent.gatewayId, getAgentSecret(agent));
       reply
         .header("Content-Type", "application/octet-stream")
         .header("Content-Disposition", 'attachment; filename="AgentSync-Setup.bat"');
@@ -495,7 +537,7 @@ export async function registerApiRoutes(app: FastifyInstance, store: Store, rout
     }
 
     if (os === "mac" || !os) {
-      const script = macSetupScript(url, agent.gatewayId, agent.secret);
+      const script = macSetupScript(url, agent.gatewayId, getAgentSecret(agent));
       reply
         .header("Content-Type", "application/x-sh; charset=utf-8")
         .header("Content-Disposition", 'attachment; filename="AgentSync-Setup.command"');

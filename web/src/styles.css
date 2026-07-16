@@ -746,6 +746,11 @@ small {
   justify-content: space-between;
 }
 
+.compact-list article.revoked,
+.agent-tile.revoked {
+  opacity: 0.55;
+}
+
 /* Swarm graph */
 .swarm-shell {
   display: grid;

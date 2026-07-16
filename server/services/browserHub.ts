@@ -6,6 +6,7 @@ import type { Store } from "../db/store.js";
 
 type BrowserMessage =
   | { type: "agent_status"; agentId: string; gatewayId: string; connected: boolean }
+  | { type: "agent_revoked"; agentId: string; gatewayId: string }
   | { type: "message"; channelId: string; message: unknown }
   | { type: "message_updated"; channelId: string; message: unknown }
   | { type: "typing"; channelId: string; agentId: string }

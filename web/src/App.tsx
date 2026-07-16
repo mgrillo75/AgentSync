@@ -2,11 +2,11 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
-import type { AccessKey, Agent, Channel, Config, Message, ProviderKey, User } from "./types";
+import type { AccessKey, Agent, AgentSystemType, Channel, Config, Message, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
-type Pairing = Awaited<ReturnType<typeof api.createAgentPairing>>;
+type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
 type AppView = "dashboard" | "agents" | "relays" | "providers" | "access" | "chat";
 
@@ -95,17 +95,43 @@ function ConnectAgentPanel({
   config: Config | null;
   onAgentsChanged: () => Promise<void>;
 }) {
-  const [pairing, setPairing] = useState<Pairing | null>(null);
+  const [authorization, setAuthorization] = useState<Authorization | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+  const [systemLabel, setSystemLabel] = useState("");
+  const [systemType, setSystemType] = useState<AgentSystemType>("laptop");
+  const [agentKind, setAgentKind] = useState("");
   const [error, setError] = useState("");
 
-  async function createPairing() {
+  async function authorizeAgent(event: FormEvent) {
+    event.preventDefault();
     setError("");
     try {
-      const result = await api.createAgentPairing();
-      setPairing(result);
+      const result = await api.authorizeAgent({
+        displayName: displayName.trim(),
+        systemLabel: systemLabel.trim(),
+        systemType,
+        ...(agentKind.trim() ? { agentKind: agentKind.trim() } : {})
+      });
+      setAuthorization(result);
+      setShowForm(false);
+      setDisplayName("");
+      setSystemLabel("");
+      setAgentKind("");
       await onAgentsChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create agent pairing.");
+      setError(err instanceof Error ? err.message : "Could not authorize agent.");
+    }
+  }
+
+  async function revokeAgent(agent: Agent) {
+    if (!window.confirm(`Revoke ${agent.displayName}? It will be disconnected and cannot reconnect.`)) return;
+    setError("");
+    try {
+      await api.revokeAgent(agent.id);
+      await onAgentsChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not revoke agent.");
     }
   }
 
@@ -114,55 +140,100 @@ function ConnectAgentPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">Agents</p>
-          <h2>Connect Your Agent</h2>
+          <h2>Authorized Agents</h2>
         </div>
-        <button onClick={createPairing}>Generate Pairing</button>
+        <button onClick={() => setShowForm((current) => !current)}>Authorize Agent</button>
       </div>
       <p className="muted">
-        Paste the generated prompt into your agent message window and let the agent write the relay environment lines. If
-        Hermes chat is not responding, download the setup file instead.
+        You authorize an agent once. It can reconnect any time — whether or not you are online — until you revoke it.
+        Credentials are shown a single time below.
       </p>
+      {showForm ? (
+        <form onSubmit={authorizeAgent} className="stack">
+          <label>
+            Agent name
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required />
+          </label>
+          <label>
+            System label
+            <input
+              value={systemLabel}
+              onChange={(event) => setSystemLabel(event.target.value)}
+              placeholder="e.g. Office desktop"
+              maxLength={120}
+              required
+            />
+          </label>
+          <label>
+            System type
+            <select value={systemType} onChange={(event) => setSystemType(event.target.value as AgentSystemType)}>
+              <option value="laptop">Laptop</option>
+              <option value="desktop">Desktop</option>
+              <option value="server">Server</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label>
+            Agent kind (optional)
+            <input
+              value={agentKind}
+              onChange={(event) => setAgentKind(event.target.value)}
+              placeholder="e.g. hermes, claude-code, openclaw"
+              maxLength={80}
+            />
+          </label>
+          <button type="submit">Authorize and Generate Credentials</button>
+        </form>
+      ) : null}
       {config?.persistence === "memory" ? (
         <p className="warning">Running without Postgres. Attach Heroku Postgres before real use.</p>
       ) : null}
       {error ? <p className="error">{error}</p> : null}
-      {pairing ? (
+      {authorization ? (
         <div className="command-stack">
           <label>Paste this into your agent chat</label>
-          <textarea readOnly value={pairing.agentPrompt} />
-          <button onClick={() => copy(pairing.agentPrompt)}>Copy Agent Prompt</button>
+          <textarea readOnly value={authorization.agentPrompt} />
+          <button onClick={() => copy(authorization.agentPrompt)}>Copy Agent Prompt</button>
           <label>If Hermes chat is not responding</label>
-          <SetupScriptLinks agentId={pairing.agent.id} />
+          <SetupScriptLinks agentId={authorization.agent.id} />
           <p className="setup-note">
             On macOS, double-click the downloaded file. If macOS blocks it, right-click the file and choose Open, then Open
             again.
           </p>
           <label>Manual .env lines</label>
-          <code>{pairing.env}</code>
-          <button className="secondary" onClick={() => copy(pairing.env)}>Copy Env Lines</button>
+          <code>{authorization.env}</code>
+          <button className="secondary" onClick={() => copy(authorization.env)}>Copy Env Lines</button>
           <label>macOS/Linux helper</label>
-          <code>{pairing.macCommands}</code>
+          <code>{authorization.macCommands}</code>
           <label>Windows PowerShell helper</label>
-          <code>{pairing.windowsCommands}</code>
+          <code>{authorization.windowsCommands}</code>
         </div>
       ) : null}
-      <div className="agent-list">
-        {agents.length === 0 ? <p className="muted">No agents connected yet. Relay URL: {config?.relayUrl ?? "loading..."}</p> : null}
+      <div className="compact-list">
+        {agents.length === 0 ? <p className="muted">No agents authorized yet. Relay URL: {config?.relayUrl ?? "loading..."}</p> : null}
         {agents.map((agent) => (
-          <div className="agent-pill" key={agent.id}>
+          <article className={agent.revokedAt ? "revoked" : undefined} key={agent.id}>
             <span className="agent-avatar">{initials(agent.displayName)}</span>
             <div>
               <strong>{agent.displayName}</strong>
-              <small>{agent.gatewayId}</small>
+              <small>
+                {agent.systemLabel ?? "Unknown system"} · {agent.systemType ?? "other"} · authorized {new Date(agent.createdAt).toLocaleString()}
+              </small>
+              <small>{agent.lastSeenAt ? `Last seen ${new Date(agent.lastSeenAt).toLocaleString()}` : "Never connected"}</small>
             </div>
+            {agent.systemType ? <span className="badge">{agent.systemType}</span> : null}
             <span className={agent.connectedAt ? "status-dot online" : "status-dot"} />
-            <SetupScriptLinks agentId={agent.id} compact />
-          </div>
+            {agent.revokedAt ? (
+              <span className="badge warning">Revoked</span>
+            ) : (
+              <>
+                <SetupScriptLinks agentId={agent.id} compact />
+                <button className="secondary" onClick={() => void revokeAgent(agent)}>Revoke</button>
+              </>
+            )}
+          </article>
         ))}
       </div>
-      <button className="secondary" onClick={onAgentsChanged}>
-        Refresh Agents
-      </button>
     </section>
   );
 }
@@ -565,15 +636,16 @@ function DashboardView({
   messages: Message[];
   wsConnected: boolean;
 }) {
-  const activeAgents = agents.filter((agent) => agent.connectedAt).length;
+  const authorizedAgents = agents.filter((agent) => !agent.revokedAt);
+  const activeAgents = authorizedAgents.filter((agent) => agent.connectedAt).length;
   const memberCount = channels.reduce((total, channel) => total + channel.members.length, 0);
-  const latestAgents = agents.slice(0, 6);
+  const latestAgents = authorizedAgents.slice(0, 6);
   const latestChannels = channels.slice(0, 5);
 
   return (
     <div className="view-stack">
       <section className="stat-grid">
-        <StatCard label="Active Agents" value={activeAgents} sublabel={`/ ${agents.length}`} accent="green" icon="AG" />
+        <StatCard label="Active Agents" value={activeAgents} sublabel={`/ ${authorizedAgents.length}`} accent="green" icon="AG" />
         <StatCard label="Channels" value={channels.length} accent="blue" icon="CH" />
         <StatCard label="Messages Loaded" value={messages.length} accent="amber" icon="MS" />
         <StatCard label="Members" value={memberCount} accent="purple" icon="MB" />
@@ -594,7 +666,7 @@ function DashboardView({
               <article className={agent.connectedAt ? "agent-tile online" : "agent-tile"} key={agent.id}>
                 <span className="agent-avatar">{initials(agent.displayName)}</span>
                 <strong>{agent.displayName}</strong>
-                <small>{agent.connectedAt ? "Online" : "Offline"}</small>
+                <small>{agent.systemLabel ?? (agent.connectedAt ? "Online" : "Offline")}</small>
               </article>
             ))}
           </div>
@@ -672,6 +744,15 @@ export default function App() {
           current.map((agent) =>
             agent.id === payload.agentId
               ? { ...agent, connectedAt: payload.connected ? new Date().toISOString() : null }
+              : agent
+          )
+        );
+      }
+      if (payload.type === "agent_revoked") {
+        setAgents((current) =>
+          current.map((agent) =>
+            agent.id === payload.agentId
+              ? { ...agent, revokedAt: new Date().toISOString(), connectedAt: null }
               : agent
           )
         );
@@ -764,7 +845,7 @@ export default function App() {
 
             {activeView === "agents" ? (
               <>
-                <PageHeader title="Agents" subtitle="Generate pairing tokens and monitor connected agents." live={wsConnected} />
+                <PageHeader title="Agents" subtitle="Authorize agents to connect from your devices, and revoke access at any time." live={wsConnected} />
                 <ConnectAgentPanel agents={agents} config={config} onAgentsChanged={reloadLists} />
               </>
             ) : null}

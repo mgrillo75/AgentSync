@@ -82,7 +82,7 @@ export function verifyRelayUpgradeToken(
   const gatewayId = parts.join(":");
   const exp = Number.parseInt(expRaw, 10);
   if (!gatewayId || Number.isNaN(exp)) return { ok: false, reason: "malformed token" };
-  if (exp !== 0 && Math.floor(Date.now() / 1000) > exp) {
+  if (Math.floor(Date.now() / 1000) > exp) {
     return { ok: false, reason: "token expired" };
   }
 

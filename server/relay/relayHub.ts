@@ -4,7 +4,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { sha256, verifyRelayUpgradeToken } from "../crypto.js";
 import type { Store } from "../db/store.js";
 import type { BrowserHub } from "../services/browserHub.js";
-import { provisionAgentForOwner } from "../services/agentProvisioning.js";
+import { getAgentSecret, provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { AgentDelivery } from "../services/messageRouter.js";
 import type { Agent, RelayInboundEvent } from "../types.js";
 
@@ -88,9 +88,9 @@ export class RelayHub implements AgentDelivery {
     if (!gatewayId) return rejectUpgrade(socket);
 
     const agent = await this.store.getAgentByGatewayId(gatewayId);
-    if (!agent) return rejectUpgrade(socket);
+    if (!agent || agent.revokedAt) return rejectUpgrade(socket);
 
-    const verification = verifyRelayUpgradeToken(token, agent.secret);
+    const verification = verifyRelayUpgradeToken(token, getAgentSecret(agent));
     if (!verification.ok || verification.gatewayId !== gatewayId) {
       return rejectUpgrade(socket);
     }
@@ -110,11 +110,17 @@ export class RelayHub implements AgentDelivery {
   } | null> {
     const token = await this.store.redeemEnrollmentToken(sha256(enrollmentToken));
     if (!token) return null;
-    const { agent, secret, deliveryKey } = await provisionAgentForOwner(this.store, {
-      ownerUserId: token.ownerUserId,
-      gatewayId,
-      displayName: `Hermes ${gatewayId.replace(/^gw-/, "")}`
-    });
+    let provisioned;
+    try {
+      provisioned = await provisionAgentForOwner(this.store, {
+        ownerUserId: token.ownerUserId,
+        gatewayId,
+        displayName: `Hermes ${gatewayId.replace(/^gw-/, "")}`
+      });
+    } catch {
+      return null;
+    }
+    const { agent, secret, deliveryKey } = provisioned;
 
     return {
       secret,
@@ -133,6 +139,13 @@ export class RelayHub implements AgentDelivery {
       event,
       ...(deliveryId ? { bufferId: deliveryId } : {})
     });
+    return true;
+  }
+
+  disconnectAgent(agentId: string, code = 4403, reason = "revoked"): boolean {
+    const connection = this.connections.get(agentId);
+    if (!connection || connection.ws.readyState !== WebSocket.OPEN) return false;
+    connection.ws.close(code, reason);
     return true;
   }
 

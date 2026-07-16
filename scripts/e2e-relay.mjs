@@ -15,6 +15,10 @@ function hmacHex(payload, secret) {
 
 function makeUpgradeToken(gatewayId, secret) {
   const exp = Math.floor(Date.now() / 1000) + 300;
+  return makeUpgradeTokenAtExp(gatewayId, secret, exp);
+}
+
+function makeUpgradeTokenAtExp(gatewayId, secret, exp) {
   const sig = hmacHex(`${gatewayId}:${exp}`, secret);
   return Buffer.from(`${gatewayId}:${exp}:${sig}`, "utf8").toString("base64url");
 }
@@ -72,14 +76,41 @@ async function enroll(token, gatewayId) {
   return body;
 }
 
-async function createPairing(cookie) {
-  const { body } = await json("/api/agents/pair", {
+async function createAuthorization(cookie) {
+  const { body } = await json("/api/agents/authorize", {
     method: "POST",
     headers: { Cookie: cookie },
-    body: "{}"
+    body: JSON.stringify({
+      displayName: "California E2E Agent",
+      systemLabel: "e2e-runner",
+      systemType: "server"
+    })
   });
-  assert(body.gatewayId && body.secret && body.env, "pairing response missing credentials");
+  assert(body.gatewayId && body.secret && body.env, "authorization response missing credentials");
   return body;
+}
+
+async function expectRelayTokenRejected(token) {
+  const ws = new WebSocket(relayUrl, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("relay token was not rejected")), 5000);
+    ws.once("open", () => {
+      clearTimeout(timeout);
+      ws.close();
+      reject(new Error("rejected relay token unexpectedly connected"));
+    });
+    ws.once("unexpected-response", (_request, response) => {
+      clearTimeout(timeout);
+      response.resume();
+      resolve(response.statusCode);
+    });
+    ws.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+  });
 }
 
 class RelayClient {
@@ -149,6 +180,19 @@ class RelayClient {
   close() {
     this.ws.close();
   }
+
+  waitForClose(ms = 5000) {
+    if (this.ws.readyState === WebSocket.CLOSED) return Promise.resolve({ code: this.closeCode, reason: this.closeReason });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`${this.name} timed out waiting for socket close`)), ms);
+      this.ws.once("close", (code, reason) => {
+        clearTimeout(timeout);
+        this.closeCode = code;
+        this.closeReason = reason.toString();
+        resolve({ code, reason: this.closeReason });
+      });
+    });
+  }
 }
 
 const unique = Date.now();
@@ -160,8 +204,20 @@ const caMember = await enterAccessKey(caToken);
 const txMember = await enterAccessKey(txToken);
 const caCookie = caMember.cookie;
 const txCookie = txMember.cookie;
-const caPair = await createPairing(caCookie);
+const caAuthorization = await createAuthorization(caCookie);
 const txEnroll = await enroll(await createEnrollment(txCookie), `gw-tx-${unique}`);
+
+const setupResponse = await fetch(`${baseUrl}/api/agents/${caAuthorization.agent.id}/setup-script?os=mac`, {
+  headers: { Cookie: caCookie }
+});
+const setupScript = await setupResponse.text();
+assert(setupResponse.status === 200, `setup script returned ${setupResponse.status}`);
+assert(setupScript.includes(caAuthorization.secret), "setup script did not contain the plaintext agent secret");
+
+const neverExpiresStatus = await expectRelayTokenRejected(
+  makeUpgradeTokenAtExp(caAuthorization.gatewayId, caAuthorization.secret, 0)
+);
+assert(neverExpiresStatus === 401, `exp=0 token returned ${neverExpiresStatus}, expected 401`);
 
 const { body: channelBody } = await json("/api/channels", {
   method: "POST",
@@ -170,7 +226,7 @@ const { body: channelBody } = await json("/api/channels", {
 });
 const channel = channelBody.channel;
 
-const ca = new RelayClient("California", caPair.gatewayId, caPair.secret);
+const ca = new RelayClient("California", caAuthorization.gatewayId, caAuthorization.secret);
 const tx = new RelayClient("Texas", txEnroll.gatewayId, txEnroll.secret);
 await Promise.all([ca.open(), tx.open()]);
 
@@ -200,13 +256,44 @@ ca.send({
 const result = await ca.waitFor((frame) => frame.type === "outbound_result" && frame.requestId === requestId);
 assert(result.result.success === true, "agent outbound send failed");
 const peerFrame = await tx.waitFor((frame) => frame.type === "inbound" && frame.event.text.includes("California agent"));
-assert(peerFrame.event.source.user_name.includes("Hermes"), "peer inbound author mismatch");
+assert(peerFrame.event.source.user_name === "California E2E Agent", "peer inbound author mismatch");
 
-ca.close();
+const closePromise = ca.waitForClose();
+const { body: revokeBody } = await json(`/api/agents/${caAuthorization.agent.id}/revoke`, {
+  method: "POST",
+  headers: { Cookie: caCookie },
+  body: "{}"
+});
+assert(revokeBody.agent.revokedAt, "revocation response missing revokedAt");
+const revokedClose = await closePromise;
+assert(revokedClose.code === 4403, `revoked socket closed with ${revokedClose.code}, expected 4403`);
+
+const reconnectStatus = await expectRelayTokenRejected(
+  makeUpgradeToken(caAuthorization.gatewayId, caAuthorization.secret)
+);
+assert(reconnectStatus === 401, `revoked reconnect returned ${reconnectStatus}, expected 401`);
+
+await json(`/api/channels/${channel.id}/messages`, {
+  method: "POST",
+  headers: { Cookie: caCookie },
+  body: JSON.stringify({ content: "Message after California revocation" })
+});
+await tx.waitFor((frame) => frame.type === "inbound" && frame.event.text.includes("after California revocation"));
+
+const reenrollResponse = await fetch(`${baseUrl}/relay/enroll`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: "Bearer local-e2e" },
+  body: JSON.stringify({
+    enrollmentToken: await createEnrollment(caCookie),
+    gatewayId: caAuthorization.gatewayId
+  })
+});
+assert(reenrollResponse.status === 403, `revoked gateway re-enroll returned ${reenrollResponse.status}, expected 403`);
+
 tx.close();
 
 console.log("Relay E2E passed:", {
   channelId: channel.id,
-  caGateway: caPair.gatewayId,
+  caGateway: caAuthorization.gatewayId,
   txGateway: txEnroll.gatewayId
 });

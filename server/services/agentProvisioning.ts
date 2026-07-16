@@ -1,4 +1,4 @@
-import { randomSecret } from "../crypto.js";
+import { decryptSecret, encryptSecret, randomSecret } from "../crypto.js";
 import type { Store } from "../db/store.js";
 import type { Agent } from "../types.js";
 
@@ -14,6 +14,9 @@ export async function provisionAgentForOwner(
     ownerUserId: string;
     gatewayId: string;
     displayName?: string;
+    systemLabel?: string | null;
+    systemType?: Agent["systemType"];
+    agentKind?: string | null;
     secret?: string;
     deliveryKey?: string;
   }
@@ -24,8 +27,11 @@ export async function provisionAgentForOwner(
     ownerUserId: input.ownerUserId,
     gatewayId: input.gatewayId,
     displayName: input.displayName ?? `Hermes ${input.gatewayId.replace(/^gw-/, "")}`,
-    secret,
-    deliveryKey
+    systemLabel: input.systemLabel ?? null,
+    systemType: input.systemType ?? null,
+    agentKind: input.agentKind ?? null,
+    secret: encryptSecret(secret),
+    deliveryKey: encryptSecret(deliveryKey)
   });
 
   for (const channel of await store.listChannelsForUser(input.ownerUserId)) {
@@ -33,4 +39,8 @@ export async function provisionAgentForOwner(
   }
 
   return { agent, secret, deliveryKey };
+}
+
+export function getAgentSecret(agent: Agent): string {
+  return agent.secret.startsWith("v1:") ? decryptSecret(agent.secret) : agent.secret;
 }
