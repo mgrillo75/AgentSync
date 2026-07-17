@@ -7,7 +7,7 @@ import { useSwarmPanZoom } from "../relays/useSwarmPanZoom";
 import { NexusNode, type NexusSendTarget } from "./NexusNode";
 
 const RADIUS = 280;
-const HUMAN_NODE_H = 170;
+const HUMAN_NODE_H = NODE_H;
 type Position = { x: number; y: number };
 
 function graphId(kind: "user" | "agent", id: string) { return `${kind}:${id}`; }
@@ -42,6 +42,7 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
   const [graph, setGraph] = useState<NexusGraph | null>(null);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [transmittingAgentId, setTransmittingAgentId] = useState<string | null>(null);
   const [positionOverrides, setPositionOverrides] = useState<Map<string, Position>>(() => new Map());
   const { transform, handlers: panHandlers, zoomIn, zoomOut, fitToScreen } = useSwarmPanZoom();
 
@@ -116,8 +117,20 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
   }, [human, participants, renderPositions]);
 
   const send = useCallback(async (agentId: string, content: string) => {
-    try { setError(""); await api.sendToAgent(agentId, content); await reload(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not send message."); throw cause; }
+    const startedAt = Date.now();
+    setTransmittingAgentId(agentId);
+    try {
+      setError("");
+      await api.sendToAgent(agentId, content);
+      await reload();
+      const remaining = Math.max(0, 900 - (Date.now() - startedAt));
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not send message.");
+      throw cause;
+    } finally {
+      setTransmittingAgentId(null);
+    }
   }, [reload]);
 
   return (
@@ -139,7 +152,24 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
             const start = borderPoint(from, participantHeight(fromParticipant.kind), to, participantHeight(toParticipant.kind));
             const end = borderPoint(to, participantHeight(toParticipant.kind), from, participantHeight(fromParticipant.kind));
             return <line key={`${link.fromKind}:${link.fromId}-${link.toKind}:${link.toId}`} className="nexus-edge" x1={start.x} y1={start.y} x2={end.x} y2={end.y} style={{ strokeWidth: Math.min(5, 1.5 + Math.log2(link.count + 1)) }} />;
-          })}</svg>
+          })}
+          {transmittingAgentId && human ? (() => {
+            const target = participants.find((participant) => participant.kind === "agent" && participant.agent.id === transmittingAgentId);
+            const from = renderPositions.get(human.id);
+            const to = target && renderPositions.get(target.id);
+            if (!target || !from || !to) return null;
+            const start = borderPoint(from, HUMAN_NODE_H, to, NODE_H);
+            const end = borderPoint(to, NODE_H, from, HUMAN_NODE_H);
+            return (
+              <g className="nexus-transmission">
+                <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} />
+                <circle r="6">
+                  <animate attributeName="cx" from={start.x} to={end.x} dur="0.8s" repeatCount="indefinite" />
+                  <animate attributeName="cy" from={start.y} to={end.y} dur="0.8s" repeatCount="indefinite" />
+                </circle>
+              </g>
+            );
+          })() : null}</svg>
           {participants.map((participant) => {
             const position = renderPositions.get(participant.id);
             if (!position) return null;

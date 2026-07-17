@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type PointerEvent } from "react";
+import { useState, type PointerEvent } from "react";
 import type { Agent, User } from "../../types";
 import { AgentAvatar } from "../relays/AgentAvatar";
 
@@ -43,11 +43,6 @@ export function NexusNode({
     }
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (sendTargets.length === 1) void send(sendTargets[0].agentId);
-  }
-
   return (
     <article
       className={["swarm-node", "nexus-node", human ? "human" : "agent", selected ? "selected" : "", dragging ? "dragging" : ""].join(" ")}
@@ -64,10 +59,17 @@ export function NexusNode({
       </div>
 
       {human ? (
-        <form className="nexus-composer" onSubmit={submit} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={sendTargets.length === 0 ? "No connected agents" : "Message an agent..."} disabled={sendTargets.length === 0 || sending} aria-label="Message to agent" />
-          {sendTargets.length > 1 ? <small>Choose an agent button to send</small> : null}
-        </form>
+        <div className="nexus-composer" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={sendTargets.length === 0 ? "No connected agents" : "Message an agent..."}
+            disabled={sendTargets.length === 0 || sending}
+            aria-label="Message to agent"
+            rows={3}
+            wrap="soft"
+          />
+        </div>
       ) : null}
 
       {human ? sendTargets.map((target) => (
