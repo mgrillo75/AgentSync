@@ -613,6 +613,26 @@ export async function registerApiRoutes(
 
     const linkMap = new Map<string, NexusLink>();
     for (const channel of channels) {
+      if (channel.kind === "dm" && channel.dmAgentId) {
+        const from = participants.get(`user:${channel.createdBy}`);
+        const to = participants.get(`agent:${channel.dmAgentId}`);
+        if (!from || !to) continue;
+        const [fromKey, toKey] = [`user:${channel.createdBy}`, `agent:${channel.dmAgentId}`].sort();
+        const key = `${fromKey}|${toKey}`;
+        for (const message of await store.listMessages(channel.id, 200)) {
+          if (message.authorKind === "system") continue;
+          const existing = linkMap.get(key);
+          linkMap.set(key, {
+            fromKind: from.kind,
+            fromId: from.id,
+            toKind: to.kind,
+            toId: to.id,
+            lastAt: existing && existing.lastAt > message.createdAt ? existing.lastAt : message.createdAt,
+            count: (existing?.count ?? 0) + 1
+          });
+        }
+        continue;
+      }
       const messages = (await store.listMessages(channel.id, 200)).filter(
         (message) => message.authorKind !== "system" && participants.has(`${message.authorKind}:${message.authorId}`)
       );
@@ -641,6 +661,26 @@ export async function registerApiRoutes(
     }
 
     return { member: user, agents: agents.map(publicAgent), links: [...linkMap.values()] };
+  });
+
+  app.post("/api/agents/:agentId/messages", async (request, reply) => {
+    const user = await requireUser(store, request);
+    const { agentId } = request.params as { agentId: string };
+    const agent = await store.getAgentById(agentId);
+    if (!agent || agent.ownerUserId !== user.id || agent.revokedAt) {
+      reply.code(404);
+      return { error: "Agent not found." };
+    }
+    const body = createMessageSchema.parse(request.body);
+    const channel = await store.getOrCreateDmChannel(user.id, agent.id);
+    const message = await router.routeHumanMessage({
+      channelId: channel.id,
+      userId: user.id,
+      userName: user.name,
+      content: body.content,
+      replyToMessageId: body.replyToMessageId
+    });
+    return { message, channelId: channel.id };
   });
 
   app.get("/api/channels", async (request) => {

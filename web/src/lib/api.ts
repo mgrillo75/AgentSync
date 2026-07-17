@@ -78,6 +78,11 @@ export const api = {
   setupScriptUrl: (agentId: string, os: "mac" | "windows") => `/api/agents/${agentId}/setup-script?os=${os}`,
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   nexusGraph: () => request<NexusGraph>("/api/nexus/graph"),
+  sendToAgent: (agentId: string, content: string) =>
+    request<{ message: Message; channelId: string }>(`/api/agents/${agentId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content })
+    }),
   listChannels: () => request<{ channels: Channel[] }>("/api/channels"),
   createChannel: (name: string, inviteUserId: string) =>
     request<{ channel: Channel }>("/api/channels", {

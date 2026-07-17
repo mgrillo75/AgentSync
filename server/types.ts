@@ -88,6 +88,8 @@ export type Channel = {
   id: string;
   name: string;
   createdBy: string;
+  kind: "chat" | "dm";
+  dmAgentId: string | null;
   agentStreakCount: number;
   throttledUntil: string | null;
   createdAt: string;

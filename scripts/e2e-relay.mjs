@@ -271,12 +271,31 @@ assert(result.result.success === true, "agent outbound send failed");
 const peerFrame = await tx.waitFor((frame) => frame.type === "inbound" && frame.event.text.includes("California agent"));
 assert(peerFrame.event.source.user_name === "California Nexus Agent", "peer inbound author mismatch");
 
+await json(`/api/agents/${caAuthorization.agent.id}/messages`, {
+  method: "POST",
+  headers: { Cookie: caCookie },
+  body: JSON.stringify({ content: "Direct nexus ping" })
+});
+const directFrame = await ca.waitFor((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping");
+assert(directFrame.event.source.chat_id !== channel.id, "direct message reused the shared channel");
+await new Promise((resolve) => setTimeout(resolve, 300));
+assert(!tx.frames.some((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping"), "direct message reached the non-target agent");
+
 const { body: nexusBody } = await json("/api/nexus/graph", { headers: { Cookie: caCookie } });
 assert(nexusBody.member.id === caMember.user.id, "Nexus member mismatch");
 assert(nexusBody.agents.some((agent) => agent.id === caAuthorization.agent.id), "Nexus omitted connected agent");
 assert(nexusBody.links.some((link) =>
   [link.fromId, link.toId].includes(caMember.user.id) && [link.fromId, link.toId].includes(caAuthorization.agent.id)
 ), "Nexus omitted member-agent communication link");
+const directLink = nexusBody.links.find((link) =>
+  [link.fromId, link.toId].includes(caMember.user.id) && [link.fromId, link.toId].includes(caAuthorization.agent.id)
+);
+assert(directLink?.count >= 1, "Nexus did not count the first direct message");
+
+const { body: channelList } = await json("/api/channels", { headers: { Cookie: caCookie } });
+const dmChannels = channelList.channels.filter((item) => item.kind === "dm");
+assert(dmChannels.length === 1, `expected one DM channel, found ${dmChannels.length}`);
+assert(dmChannels[0].dmAgentId === caAuthorization.agent.id, "DM channel target mismatch");
 
 const closePromise = ca.waitForClose();
 const { body: revokeBody } = await json(`/api/agents/${caAuthorization.agent.id}/revoke`, {

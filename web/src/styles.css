@@ -1147,6 +1147,8 @@ small {
 }
 
 .nexus-node.human {
+  height: 170px;
+  overflow: visible;
   border-color: var(--nexus-human-border);
   box-shadow: 0 0 18px rgba(57, 255, 20, 0.14), 0 16px 34px rgba(0, 0, 0, 0.22);
 }
@@ -1169,6 +1171,70 @@ small {
 .nexus-edge {
   stroke: rgba(84, 198, 216, 0.58);
   vector-effect: non-scaling-stroke;
+  transition: stroke-width 180ms ease;
+}
+
+.nexus-shell .swarm-toolbar > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.nexus-composer {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 1.05rem;
+  cursor: text;
+}
+
+.nexus-composer input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(84, 198, 216, 0.28);
+  border-radius: 8px;
+  padding: 0.58rem 0.64rem;
+  background: rgba(5, 10, 20, 0.76);
+  color: var(--text);
+  font-size: 0.7rem;
+  user-select: text;
+}
+
+.nexus-composer input:focus {
+  border-color: rgba(84, 198, 216, 0.72);
+  outline: 2px solid rgba(84, 198, 216, 0.12);
+}
+
+.nexus-composer small {
+  color: var(--muted);
+  font-size: 0.55rem;
+  text-align: center;
+}
+
+.nexus-send-btn {
+  position: absolute;
+  z-index: 4;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border: 2px solid #172133;
+  border-radius: 50%;
+  padding: 0;
+  background: #369cf5;
+  color: white;
+  box-shadow: 0 0 0 3px rgba(54, 156, 245, 0.14), 0 0 18px rgba(54, 156, 245, 0.38);
+  cursor: pointer;
+}
+
+.nexus-send-btn:hover:not(:disabled) {
+  transform: translate(-50%, -50%) scale(1.08);
+  box-shadow: 0 0 0 4px rgba(54, 156, 245, 0.18), 0 0 24px rgba(54, 156, 245, 0.55);
+}
+
+.nexus-send-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .swarm-node-delete {

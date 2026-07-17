@@ -780,6 +780,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<AppView>("dashboard");
   const [wsConnected, setWsConnected] = useState(false);
+  const [nexusRefresh, setNexusRefresh] = useState(0);
 
   async function refresh() {
     const [cfg, me] = await Promise.all([api.config(), api.me()]);
@@ -795,7 +796,10 @@ export default function App() {
       setMembers([]);
       setAccessKeys([]);
     }
-    if (!selectedChannelId && me.channels[0]) setSelectedChannelId(me.channels[0].id);
+    const firstChat = me.channels.find((channel) => channel.kind !== "dm");
+    if (!selectedChannelId || !me.channels.some((channel) => channel.id === selectedChannelId && channel.kind !== "dm")) {
+      setSelectedChannelId(firstChat?.id ?? null);
+    }
   }
 
   useEffect(() => {
@@ -811,6 +815,7 @@ export default function App() {
     ws.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.type === "agent_status") {
+        setNexusRefresh((current) => current + 1);
         setAgents((current) =>
           current.map((agent) =>
             agent.id === payload.agentId
@@ -820,6 +825,7 @@ export default function App() {
         );
       }
       if (payload.type === "agent_revoked") {
+        setNexusRefresh((current) => current + 1);
         setAgents((current) =>
           current.map((agent) =>
             agent.id === payload.agentId
@@ -829,6 +835,7 @@ export default function App() {
         );
       }
       if (payload.type === "message") {
+        setNexusRefresh((current) => current + 1);
         const message = payload.message as Message;
         if (message.channelId === selectedChannelId) {
           setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
@@ -853,9 +860,10 @@ export default function App() {
     void api.listMessages(selectedChannelId).then((result) => setMessages(result.messages));
   }, [selectedChannelId]);
 
+  const chatChannels = useMemo(() => channels.filter((channel) => channel.kind !== "dm"), [channels]);
   const selectedChannel = useMemo(
-    () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
-    [channels, selectedChannelId]
+    () => chatChannels.find((channel) => channel.id === selectedChannelId) ?? null,
+    [chatChannels, selectedChannelId]
   );
 
   async function reloadLists() {
@@ -863,6 +871,9 @@ export default function App() {
     setUser(me.user);
     setAgents(me.agents);
     setChannels(me.channels);
+    if (!me.channels.some((channel) => channel.id === selectedChannelId && channel.kind !== "dm")) {
+      setSelectedChannelId(me.channels.find((channel) => channel.kind !== "dm")?.id ?? null);
+    }
     if (me.user) {
       const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
       setMembers(memberResult.members);
@@ -910,7 +921,7 @@ export default function App() {
             {activeView === "dashboard" ? (
               <>
                 <PageHeader title="Command Center" subtitle="Real-time overview of the AgentSync relay." live={wsConnected} />
-                <DashboardView agents={agents} channels={channels} messages={messages} wsConnected={wsConnected} />
+                <DashboardView agents={agents} channels={chatChannels} messages={messages} wsConnected={wsConnected} />
               </>
             ) : null}
 
@@ -933,7 +944,7 @@ export default function App() {
                 <PageHeader title="Chat" subtitle="Create channels and send shared messages to connected agents." live={wsConnected} />
                 <div className="chat-workspace">
                   <ChannelPanel
-                    channels={channels}
+                    channels={chatChannels}
                     members={members.filter((member) => member.id !== user.id)}
                     selectedId={selectedChannelId}
                     onSelect={setSelectedChannelId}
@@ -953,12 +964,7 @@ export default function App() {
               </>
             ) : null}
 
-            {activeView === "nexus" ? (
-              <>
-                <PageHeader title="Nexus" subtitle="Explore member, agent, and recent communication relationships." live={wsConnected} />
-                <NexusView />
-              </>
-            ) : null}
+            {activeView === "nexus" ? <NexusView live={wsConnected} refreshSignal={nexusRefresh} /> : null}
           </div>
         </div>
       )}

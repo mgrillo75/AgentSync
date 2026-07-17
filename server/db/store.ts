@@ -101,6 +101,7 @@ export interface Store {
   deleteLlmAgent(id: string): Promise<boolean>;
 
   createChannel(input: { name: string; createdBy: string }): Promise<Channel>;
+  getOrCreateDmChannel(userId: string, agentId: string): Promise<Channel>;
   addChannelMember(channelId: string, memberKind: "user" | "agent", memberId: string): Promise<void>;
   listChannelsForUser(userId: string): Promise<ChannelView[]>;
   getChannel(channelId: string): Promise<Channel | null>;
@@ -211,6 +212,8 @@ create table if not exists channels (
   id text primary key,
   name text not null,
   created_by text not null references users(id) on delete cascade,
+  kind text not null default 'chat',
+  dm_agent_id text,
   agent_streak_count integer not null default 0,
   throttled_until timestamptz,
   created_at timestamptz not null default now()
@@ -292,6 +295,9 @@ alter table agents add column if not exists subtitle_alias text;
 alter table agents add column if not exists system_type text;
 alter table agents add column if not exists agent_kind text;
 alter table agents add column if not exists revoked_at timestamptz;
+alter table channels add column if not exists kind text not null default 'chat';
+alter table channels add column if not exists dm_agent_id text;
+create unique index if not exists idx_channels_dm on channels(created_by, dm_agent_id) where kind = 'dm';
 `;
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -400,6 +406,8 @@ function mapChannel(row: any): Channel {
     id: row.id,
     name: row.name,
     createdBy: row.created_by,
+    kind: row.kind ?? "chat",
+    dmAgentId: row.dm_agent_id ?? null,
     agentStreakCount: Number(row.agent_streak_count ?? 0),
     throttledUntil: toIso(row.throttled_until),
     createdAt: toIso(row.created_at) ?? new Date().toISOString()
@@ -907,6 +915,35 @@ export class PgStore implements Store {
     return mapChannel(result.rows[0]);
   }
 
+  async getOrCreateDmChannel(userId: string, agentId: string): Promise<Channel> {
+    const existing = await this.pool.query(
+      "select * from channels where created_by = $1 and dm_agent_id = $2 and kind = 'dm' limit 1",
+      [userId, agentId]
+    );
+    if (existing.rows[0]) return mapChannel(existing.rows[0]);
+    return this.tx(async (client) => {
+      const inserted = await client.query(
+        `insert into channels (id, name, created_by, kind, dm_agent_id)
+         values ($1, 'DM', $2, 'dm', $3) on conflict do nothing returning *`,
+        [randomId("chn"), userId, agentId]
+      );
+      const selected = inserted.rows[0]
+        ? inserted
+        : await client.query(
+            "select * from channels where created_by = $1 and dm_agent_id = $2 and kind = 'dm' limit 1",
+            [userId, agentId]
+          );
+      const channel = selected.rows[0];
+      if (!channel) throw new Error("could not create DM channel");
+      await client.query(
+        `insert into channel_members (channel_id, member_kind, member_id)
+         values ($1, 'user', $2), ($1, 'agent', $3) on conflict do nothing`,
+        [channel.id, userId, agentId]
+      );
+      return mapChannel(channel);
+    });
+  }
+
   async addChannelMember(channelId: string, memberKind: "user" | "agent", memberId: string): Promise<void> {
     await this.pool.query(
       `insert into channel_members (channel_id, member_kind, member_id)
@@ -1408,11 +1445,34 @@ export class MemoryStore implements Store {
       id: randomId("chn"),
       name: input.name,
       createdBy: input.createdBy,
+      kind: "chat",
+      dmAgentId: null,
       agentStreakCount: 0,
       throttledUntil: null,
       createdAt: new Date().toISOString()
     };
     this.channels.set(channel.id, channel);
+    return channel;
+  }
+
+  async getOrCreateDmChannel(userId: string, agentId: string): Promise<Channel> {
+    const existing = [...this.channels.values()].find(
+      (channel) => channel.createdBy === userId && channel.dmAgentId === agentId && channel.kind === "dm"
+    );
+    if (existing) return existing;
+    const channel: Channel = {
+      id: randomId("chn"),
+      name: "DM",
+      createdBy: userId,
+      kind: "dm",
+      dmAgentId: agentId,
+      agentStreakCount: 0,
+      throttledUntil: null,
+      createdAt: new Date().toISOString()
+    };
+    this.channels.set(channel.id, channel);
+    await this.addChannelMember(channel.id, "user", userId);
+    await this.addChannelMember(channel.id, "agent", agentId);
     return channel;
   }
 
