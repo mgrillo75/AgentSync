@@ -1188,7 +1188,7 @@ small {
 }
 
 .nexus-composer {
-  margin-top: 0.5rem;
+  margin-top: 0.35rem;
   cursor: text;
 }
 
@@ -1208,6 +1208,57 @@ small {
   line-height: 1.3;
   font-family: inherit;
   user-select: text;
+}
+
+.nexus-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  user-select: text;
+}
+
+.nexus-node.human .nexus-thread {
+  height: 38px;
+}
+
+.nexus-node.agent .nexus-thread {
+  height: 105px;
+  padding-bottom: 1.35rem;
+}
+
+.nexus-message {
+  flex: 0 0 auto;
+  border: 1px solid rgba(84, 198, 216, 0.2);
+  border-radius: 6px;
+  padding: 0.28rem 0.36rem;
+  background: rgba(84, 198, 216, 0.08);
+  color: var(--text);
+  font-size: 0.56rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.nexus-node.human .nexus-message {
+  border-color: rgba(57, 255, 20, 0.2);
+  background: rgba(57, 255, 20, 0.06);
+}
+
+.nexus-message-peer {
+  display: block;
+  margin-bottom: 0.1rem;
+  color: var(--muted-strong);
+  font-size: 0.5rem;
+}
+
+.nexus-thread-empty {
+  color: var(--muted);
+  font-size: 0.54rem;
+  font-style: italic;
 }
 
 .nexus-delivery-status {

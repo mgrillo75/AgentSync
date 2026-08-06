@@ -1,5 +1,5 @@
-import { useState, type PointerEvent } from "react";
-import type { Agent, NexusSendState, User } from "../../types";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
+import type { Agent, Message, NexusSendState, User } from "../../types";
 import { AgentAvatar } from "../relays/AgentAvatar";
 
 export type NexusSendTarget = { agentId: string; name: string; x: number; y: number };
@@ -16,6 +16,7 @@ type NexusNodeProps = {
   sendTargets?: NexusSendTarget[];
   onSend?: (agentId: string, content: string) => Promise<void>;
   sendState?: NexusSendState | null;
+  messages?: Array<Message & { peerName?: string }>;
 };
 
 function initials(name: string) {
@@ -24,13 +25,19 @@ function initials(name: string) {
 
 export function NexusNode({
   participant, selected, dragging, onSelect, onPointerDown, onDragHandlePointerDown,
-  onConsumeDragMoved, onEdit, sendTargets = [], onSend, sendState
+  onConsumeDragMoved, onEdit, sendTargets = [], onSend, sendState, messages = []
 }: NexusNodeProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const threadRef = useRef<HTMLDivElement>(null);
   const human = participant.kind === "human";
   const name = human ? participant.user.name : participant.agent.displayName;
   const subtitle = human ? "Member" : participant.agent.subtitleAlias ?? participant.agent.gatewayId;
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  }, [messages.at(-1)?.id]);
 
   async function send(agentId: string) {
     const content = draft.trim();
@@ -57,6 +64,16 @@ export function NexusNode({
         {human ? <span className="nexus-human-avatar">{initials(name)}</span> : <AgentAvatar seed={participant.agent.id} name={name} />}
         <div className="swarm-node-title"><strong className="swarm-node-name">{name}</strong><span className="swarm-node-model">{subtitle}</span></div>
         <span className="swarm-node-status" title="Online" />
+      </div>
+
+      <div ref={threadRef} className="nexus-thread" aria-label={`${name} direct messages`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+        {messages.length === 0 ? <span className="nexus-thread-empty">{human ? "Sent messages appear here" : "Replies appear here"}</span> : null}
+        {messages.map((message) => (
+          <div className="nexus-message" key={message.id} title={new Date(message.createdAt).toLocaleString()}>
+            {human && message.peerName ? <span className="nexus-message-peer">to {message.peerName}</span> : null}
+            <span>{message.content}</span>
+          </div>
+        ))}
       </div>
 
       {human ? (
