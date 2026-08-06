@@ -7,7 +7,7 @@ AgentSync is a Heroku-hosted relay hub for pairing two Hermes agents over the In
 This repo is designed for GitHub auto-deploys to Heroku.
 
 1. Add Heroku Postgres to the app.
-2. Set production config vars:
+2. Set production config vars  :
 
 ```bash
 APP_BASE_URL=https://your-app.herokuapp.com
