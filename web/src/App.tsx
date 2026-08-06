@@ -822,9 +822,6 @@ export default function App() {
     pendingNexusMessagesRef.current.delete(pendingMessageId);
     recentAgentRepliesRef.current.delete(pendingMessageId);
     setNexusSendState((current) => current?.messageId === pendingMessageId ? null : current);
-    setSelectedChannelId(message.channelId);
-    setActiveView("chat");
-    void api.listChannels().then((result) => setChannels(result.channels));
   }
 
   async function recoverPendingNexusReplies() {

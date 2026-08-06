@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { NODE_W } from "../../lib/swarmLayout";
-import type { Agent, NexusGraph, NexusSendState } from "../../types";
+import type { Agent, Message, NexusGraph, NexusSendState } from "../../types";
 import { useSwarmDrag } from "../relays/useSwarmDrag";
 import { useSwarmPanZoom } from "../relays/useSwarmPanZoom";
 import { NexusNode, type NexusSendTarget } from "./NexusNode";
@@ -50,13 +50,32 @@ export function NexusView({
   const containerRef = useRef<HTMLDivElement>(null);
   const didInitialFitRef = useRef(false);
   const [graph, setGraph] = useState<NexusGraph | null>(null);
+  const [conversations, setConversations] = useState<Map<string, Message[]>>(() => new Map());
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [positionOverrides, setPositionOverrides] = useState<Map<string, Position>>(() => new Map());
   const { transform, handlers: panHandlers, zoomIn, zoomOut, fitToScreen } = useSwarmPanZoom();
 
   const reload = useCallback(async () => {
-    try { setGraph(await api.nexusGraph()); setError(""); }
+    try {
+      const [nextGraph, channelResult] = await Promise.all([api.nexusGraph(), api.listChannels()]);
+      const dmByAgent = new Map(channelResult.channels
+        .filter((channel) => channel.kind === "dm" && channel.dmAgentId)
+        .map((channel) => [channel.dmAgentId as string, channel.id]));
+      const entries = await Promise.all(nextGraph.agents.map(async (agent) => {
+        const channelId = dmByAgent.get(agent.id);
+        if (!channelId) return [agent.id, [] as Message[]] as const;
+        try {
+          const result = await api.listMessages(channelId);
+          return [agent.id, result.messages] as const;
+        } catch {
+          return [agent.id, [] as Message[]] as const;
+        }
+      }));
+      setGraph(nextGraph);
+      setConversations(new Map(entries));
+      setError("");
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load Nexus."); }
   }, []);
 
@@ -125,6 +144,15 @@ export function NexusView({
     });
   }, [human, participants, renderPositions]);
 
+  const humanMessages = useMemo(() => {
+    if (!graph) return [];
+    return graph.agents.flatMap((agent) => (conversations.get(agent.id) ?? [])
+      .filter((message) => message.authorKind === "user")
+      .map((message) => ({ ...message, peerName: agent.displayName })))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+      .slice(-20);
+  }, [conversations, graph]);
+
   const send = useCallback(async (agentId: string, content: string) => {
     const agent = graph?.agents.find((item) => item.id === agentId);
     if (!agent) throw new Error("Agent is no longer connected.");
@@ -178,7 +206,12 @@ export function NexusView({
           {participants.map((participant) => {
             const position = renderPositions.get(participant.id);
             if (!position) return null;
-            return <div className="swarm-node-position" key={participant.id} style={{ left: position.x, top: position.y }}><NexusNode participant={participant} selected={selectedId === participant.id} dragging={dragState?.agentId === participant.id} onSelect={() => setSelectedId(participant.id)} onPointerDown={(event) => startDrag(event, participant.id)} onDragHandlePointerDown={(event) => startDrag(event, participant.id)} onConsumeDragMoved={consumeLastDragMoved} onEdit={participant.kind === "agent" ? editAgent : undefined} sendTargets={participant.kind === "human" ? sendTargets : undefined} onSend={participant.kind === "human" ? send : undefined} sendState={participant.kind === "human" ? sendState : undefined} /></div>;
+            const nodeMessages = participant.kind === "human"
+              ? humanMessages
+              : (conversations.get(participant.agent.id) ?? [])
+                .filter((message) => message.authorKind === "agent")
+                .slice(-20);
+            return <div className="swarm-node-position" key={participant.id} style={{ left: position.x, top: position.y }}><NexusNode participant={participant} selected={selectedId === participant.id} dragging={dragState?.agentId === participant.id} onSelect={() => setSelectedId(participant.id)} onPointerDown={(event) => startDrag(event, participant.id)} onDragHandlePointerDown={(event) => startDrag(event, participant.id)} onConsumeDragMoved={consumeLastDragMoved} onEdit={participant.kind === "agent" ? editAgent : undefined} sendTargets={participant.kind === "human" ? sendTargets : undefined} onSend={participant.kind === "human" ? send : undefined} sendState={participant.kind === "human" ? sendState : undefined} messages={nodeMessages} /></div>;
           })}
         </div>
       </div>
