@@ -364,9 +364,6 @@ assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame
 tx.send({ type: "inbound_ack", bufferId: directFrame.bufferId });
 await new Promise((resolve) => setTimeout(resolve, 300));
 assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received"), "non-target agent falsely acknowledged the delivery");
-ca.ack(directFrame);
-const receipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received");
-assert(receipt.status === "received", "Hermes acknowledgment did not publish received status");
 
 const pendingDirect = { agentId: caAuthorization.agent.id, channelId: directSend.channel.id };
 assert(!isCorrelatedNexusReply({
@@ -407,13 +404,26 @@ ca.send({
 });
 const directReplyResult = await ca.waitFor((frame) => frame.type === "outbound_result" && frame.requestId === directReplyRequestId);
 assert(directReplyResult.result.success === true, "Hermes direct reply failed");
+const receipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received");
+assert(receipt.messageId === directSend.message.id, "correlated reply receipt lost message correlation");
 const directReplyEvent = await browser.waitFor((frame) => frame.type === "message" && frame.message?.id === directReplyResult.result.message_id);
 assert(directReplyEvent.message.authorId === caAuthorization.agent.id, "direct reply author did not match target agent");
 assert(directReplyEvent.message.channelId === directSend.channel.id, "direct reply channel did not match pending DM");
 assert(directReplyEvent.message.replyToMessageId === directSend.message.id, "direct reply did not correlate to Papa's message");
 assert(isCorrelatedNexusReply(directReplyEvent.message, directSend.message.id, pendingDirect), "matching Hermes reply did not satisfy the client correlation predicate");
-ca.autoAck = true;
-console.log("[e2e] direct receipt and reply correlation verified");
+console.log("[e2e] correlated reply reconciled receipt without inbound_ack");
+
+const intentionalClose = ca.waitForClose();
+ca.close();
+await intentionalClose;
+const caReconnected = new RelayClient("California reconnect", caAuthorization.gatewayId, caAuthorization.secret);
+await caReconnected.open();
+await new Promise((resolve) => setTimeout(resolve, 500));
+assert(
+  !caReconnected.frames.some((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping"),
+  "correlated reply delivery replayed after reconnect"
+);
+console.log("[e2e] correlated reply prevented reconnect replay");
 
 const { body: nexusBody } = await json("/api/nexus/graph", { headers: { Cookie: caCookie } });
 assert(nexusBody.member.id === caMember.user.id, "Nexus member mismatch");
@@ -431,7 +441,7 @@ const dmChannels = channelList.channels.filter((item) => item.kind === "dm");
 assert(dmChannels.length === 1, `expected one DM channel, found ${dmChannels.length}`);
 assert(dmChannels[0].dmAgentId === caAuthorization.agent.id, "DM channel target mismatch");
 
-const closePromise = ca.waitForClose();
+const closePromise = caReconnected.waitForClose();
 const { body: revokeBody } = await json(`/api/agents/${caAuthorization.agent.id}/revoke`, {
   method: "POST",
   headers: { Cookie: caCookie },

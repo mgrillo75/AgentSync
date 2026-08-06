@@ -91,6 +91,29 @@ export class MessageRouter {
       replyToMessageId: input.replyToMessageId ?? null
     });
 
+    // A correlated reply proves the agent received and handled the original
+    // delivery even when a gateway delays or loses its lower-level inbound_ack.
+    // Reconcile before broadcasting the reply so reconnect backlog drains cannot
+    // replay work that has already completed.
+    if (message.replyToMessageId) {
+      const receipt = await this.store.markDeliveryAckedByReply(
+        message.replyToMessageId,
+        input.agent.id,
+        input.channelId
+      );
+      if (receipt) {
+        this.browserHub.sendToUser(input.agent.ownerUserId, {
+          type: "delivery_status",
+          status: "received",
+          delivery: receipt,
+          deliveryId: receipt.id,
+          messageId: receipt.messageId,
+          agentId: receipt.agentId,
+          channelId: receipt.channelId
+        });
+      }
+    }
+
     await this.browserHub.broadcastChannel(input.channelId, {
       type: "message",
       channelId: input.channelId,

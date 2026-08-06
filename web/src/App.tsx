@@ -809,6 +809,7 @@ export default function App() {
   const pendingNexusMessagesRef = useRef(new Map<string, PendingNexusMessage>());
   const deliveryStatusesRef = useRef(new Map<string, DeliveryStatus>());
   const recentAgentRepliesRef = useRef(new Map<string, Message>());
+  const selectedChannelIdRef = useRef<string | null>(null);
 
   function mergeChannel(channel: Channel) {
     setChannels((current) => current.some((item) => item.id === channel.id)
@@ -824,6 +825,27 @@ export default function App() {
     setSelectedChannelId(message.channelId);
     setActiveView("chat");
     void api.listChannels().then((result) => setChannels(result.channels));
+  }
+
+  async function recoverPendingNexusReplies() {
+    const pending = [...pendingNexusMessagesRef.current.entries()];
+    if (pending.length === 0) return;
+
+    const messagesByChannel = new Map<string, Message[]>();
+    await Promise.all([...new Set(pending.map(([, item]) => item.channelId))].map(async (channelId) => {
+      const result = await api.listMessages(channelId);
+      messagesByChannel.set(channelId, result.messages);
+    }));
+
+    for (const [pendingMessageId, pendingMessage] of pending) {
+      const reply = messagesByChannel.get(pendingMessage.channelId)?.find((message) =>
+        isCorrelatedNexusReply(message, pendingMessageId, pendingMessage)
+      );
+      if (reply) {
+        openCorrelatedReply(reply, pendingMessageId, pendingMessage);
+        return;
+      }
+    }
   }
 
   async function sendNexusMessage(agent: Agent, content: string) {
@@ -882,12 +904,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    selectedChannelIdRef.current = selectedChannelId;
+  }, [selectedChannelId]);
+
+  useEffect(() => {
     if (!user) return;
-    const ws = new WebSocket(browserWsUrl());
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onerror = () => setWsConnected(false);
-    ws.onmessage = (event) => {
+    let disposed = false;
+    let retryDelay = 1_000;
+    let retryTimer: number | null = null;
+    let ws: WebSocket | null = null;
+
+    const handleMessage = (event: MessageEvent) => {
       const payload = JSON.parse(event.data) as BrowserEvent;
       if (payload.type === "agent_status") {
         setNexusRefresh((current) => current + 1);
@@ -912,7 +939,7 @@ export default function App() {
       if (payload.type === "message") {
         setNexusRefresh((current) => current + 1);
         const message = payload.message;
-        if (message.channelId === selectedChannelId) {
+        if (message.channelId === selectedChannelIdRef.current) {
           setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
         }
         if (message.authorKind === "agent" && message.replyToMessageId) {
@@ -939,11 +966,41 @@ export default function App() {
         setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
       }
     };
-    return () => {
-      setWsConnected(false);
-      ws.close();
+
+    const connect = () => {
+      if (disposed) return;
+      const socket = new WebSocket(browserWsUrl());
+      ws = socket;
+      socket.onopen = () => {
+        if (disposed || ws !== socket) return;
+        retryDelay = 1_000;
+        setWsConnected(true);
+        void Promise.all([
+          api.listChannels().then((result) => setChannels(result.channels)),
+          recoverPendingNexusReplies()
+        ]).catch(() => undefined);
+      };
+      socket.onmessage = handleMessage;
+      socket.onerror = () => {
+        if (ws === socket) setWsConnected(false);
+        socket.close();
+      };
+      socket.onclose = () => {
+        if (disposed || ws !== socket) return;
+        setWsConnected(false);
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 15_000);
+      };
     };
-  }, [user, selectedChannelId]);
+
+    connect();
+    return () => {
+      disposed = true;
+      setWsConnected(false);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      ws?.close();
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!selectedChannelId) {

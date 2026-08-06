@@ -131,6 +131,7 @@ export interface Store {
   listPendingDeliveries(agentId: string, limit: number): Promise<Delivery[]>;
   markDeliveryDelivered(deliveryId: string): Promise<Delivery | null>;
   markDeliveryAcked(deliveryId: string, agentId: string): Promise<Delivery | null>;
+  markDeliveryAckedByReply(messageId: string, agentId: string, channelId: string): Promise<Delivery | null>;
 }
 
 const resetPasswordAuthSchema = `
@@ -1092,6 +1093,17 @@ export class PgStore implements Store {
     );
     return result.rows[0] ? mapDelivery(result.rows[0]) : null;
   }
+
+  async markDeliveryAckedByReply(messageId: string, agentId: string, channelId: string): Promise<Delivery | null> {
+    const result = await this.pool.query(
+      `update delivery_queue
+       set delivered_at = coalesce(delivered_at, now()), acked_at = coalesce(acked_at, now())
+       where message_id = $1 and agent_id = $2 and channel_id = $3
+       returning *`,
+      [messageId, agentId, channelId]
+    );
+    return result.rows[0] ? mapDelivery(result.rows[0]) : null;
+  }
 }
 
 export class MemoryStore implements Store {
@@ -1611,6 +1623,16 @@ export class MemoryStore implements Store {
     if (!delivery || delivery.agentId !== agentId) return null;
     delivery.deliveredAt ??= new Date().toISOString();
     delivery.ackedAt = new Date().toISOString();
+    return delivery;
+  }
+
+  async markDeliveryAckedByReply(messageId: string, agentId: string, channelId: string): Promise<Delivery | null> {
+    const delivery = [...this.deliveries.values()].find((item) =>
+      item.messageId === messageId && item.agentId === agentId && item.channelId === channelId
+    );
+    if (!delivery) return null;
+    delivery.deliveredAt ??= new Date().toISOString();
+    delivery.ackedAt ??= new Date().toISOString();
     return delivery;
   }
 }
