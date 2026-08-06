@@ -67,7 +67,7 @@ export class MessageRouter {
       channelId: input.channelId,
       message
     });
-    const deliveries = await this.deliverMessageToAgents(message, channel.name);
+    const deliveries = await this.deliverMessageToAgents(message, channel.name, undefined, input.userId);
     return { message, deliveries };
   }
 
@@ -109,7 +109,12 @@ export class MessageRouter {
     return { message, forwarded: true, throttled: false };
   }
 
-  async deliverMessageToAgents(message: Message, channelName: string, excludeAgentId?: string): Promise<DeliveryAttempt[]> {
+  async deliverMessageToAgents(
+    message: Message,
+    channelName: string,
+    excludeAgentId?: string,
+    notifyUserId?: string
+  ): Promise<DeliveryAttempt[]> {
     const agents = await this.store.listAgentsForChannel(message.channelId);
     const event = this.buildInboundEvent(message, channelName);
     const attempts: DeliveryAttempt[] = [];
@@ -125,7 +130,19 @@ export class MessageRouter {
       });
       const delivered = await this.agentDelivery.deliverToAgent(agent, event, delivery.id);
       const current = delivered ? await this.store.markDeliveryDelivered(delivery.id) : delivery;
-      attempts.push({ delivery: current ?? delivery, status: delivered ? "sent" : "queued" });
+      const attempt = { delivery: current ?? delivery, status: delivered ? "sent" : "queued" } satisfies DeliveryAttempt;
+      attempts.push(attempt);
+      if (notifyUserId) {
+        this.browserHub.sendToUser(notifyUserId, {
+          type: "delivery_status",
+          status: attempt.status,
+          delivery: attempt.delivery,
+          deliveryId: attempt.delivery.id,
+          messageId: attempt.delivery.messageId,
+          agentId: attempt.delivery.agentId,
+          channelId: attempt.delivery.channelId
+        });
+      }
     }
     return attempts;
   }

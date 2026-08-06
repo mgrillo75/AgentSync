@@ -225,7 +225,11 @@ export class RelayHub implements AgentDelivery {
             this.browserHub.sendToUser(connection.agent.ownerUserId, {
               type: "delivery_status",
               status: "received",
-              delivery
+              delivery,
+              deliveryId: delivery.id,
+              messageId: delivery.messageId,
+              agentId: delivery.agentId,
+              channelId: delivery.channelId
             });
           }
         }

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import WebSocket from "ws";
+import { isCorrelatedNexusReply } from "../web/src/lib/nexusReply.js";
 
 const baseUrl = process.env.E2E_BASE_URL || "http://localhost:3100";
 const relayUrl = baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:") + "/relay";
@@ -291,22 +292,29 @@ const { body: channelBody } = await json("/api/channels", {
 });
 const channel = channelBody.channel;
 
-const ca = new RelayClient("California", caAuthorization.gatewayId, caAuthorization.secret);
-const tx = new RelayClient("Texas", txEnroll.gatewayId, txEnroll.secret);
 const browser = new BrowserClient(caCookie);
 
+await browser.open();
 const { body: queuedDirect } = await json(`/api/agents/${caAuthorization.agent.id}/messages`, {
   method: "POST",
   headers: { Cookie: caCookie },
   body: JSON.stringify({ content: "Queued direct nexus ping" })
 });
 assert(queuedDirect.channel.kind === "dm", "direct send did not return its DM channel");
-assert(queuedDirect.delivery.status === "queued", "offline direct send was not reported as queued");
+assert(queuedDirect.delivery?.status === "queued", `offline direct send was not reported as queued: ${JSON.stringify(queuedDirect.delivery)}`);
+const queuedEvent = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "queued");
+assert(queuedEvent.messageId === queuedDirect.message.id, "queued event message correlation mismatch");
+assert(queuedEvent.agentId === caAuthorization.agent.id, "queued event agent correlation mismatch");
+assert(queuedEvent.channelId === queuedDirect.channel.id, "queued event channel correlation mismatch");
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "received"), "offline delivery was marked received before reconnect");
 console.log("[e2e] queued delivery verified");
 
-await browser.open();
+const ca = new RelayClient("California", caAuthorization.gatewayId, caAuthorization.secret);
+const tx = new RelayClient("Texas", txEnroll.gatewayId, txEnroll.secret);
 await Promise.all([ca.open(), tx.open()]);
 await ca.waitFor((frame) => frame.type === "inbound" && frame.event.text === "Queued direct nexus ping");
+const replayReceipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "received");
+assert(replayReceipt.messageId === queuedDirect.message.id, "reconnect receipt lost message correlation");
 console.log("[e2e] relay clients connected and backlog drained");
 
 await json(`/api/channels/${channel.id}/messages`, {
@@ -346,14 +354,45 @@ const { body: directSend } = await json(`/api/agents/${caAuthorization.agent.id}
 });
 assert(directSend.channel.kind === "dm", "direct send response omitted DM channel");
 assert(directSend.delivery.status === "sent", "connected direct send was not reported as sent");
+const sentEvent = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "sent");
+assert(sentEvent.messageId === directSend.message.id, "sent event message correlation mismatch");
 const directFrame = await ca.waitFor((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping");
 assert(directFrame.event.source.chat_id !== channel.id, "direct message reused the shared channel");
 await new Promise((resolve) => setTimeout(resolve, 300));
 assert(!tx.frames.some((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping"), "direct message reached the non-target agent");
-assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.delivery?.id === directSend.delivery.delivery.id), "delivery was marked received before Hermes acknowledged it");
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received"), "delivery was marked received before Hermes acknowledged it");
+tx.send({ type: "inbound_ack", bufferId: directFrame.bufferId });
+await new Promise((resolve) => setTimeout(resolve, 300));
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received"), "non-target agent falsely acknowledged the delivery");
 ca.ack(directFrame);
-const receipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.delivery?.id === directSend.delivery.delivery.id);
+const receipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received");
 assert(receipt.status === "received", "Hermes acknowledgment did not publish received status");
+
+const pendingDirect = { agentId: caAuthorization.agent.id, channelId: directSend.channel.id };
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: directSend.channel.id,
+  replyToMessageId: null
+}, directSend.message.id, pendingDirect), "unsolicited agent message falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: directSend.channel.id,
+  replyToMessageId: queuedDirect.message.id
+}, directSend.message.id, pendingDirect), "reply to another message falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: "agt_unrelated",
+  channelId: directSend.channel.id,
+  replyToMessageId: directSend.message.id
+}, directSend.message.id, pendingDirect), "reply from another agent falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: channel.id,
+  replyToMessageId: directSend.message.id
+}, directSend.message.id, pendingDirect), "reply in another channel falsely confirmed the pending send");
 
 const directReplyRequestId = crypto.randomUUID().replaceAll("-", "");
 ca.send({
@@ -372,6 +411,7 @@ const directReplyEvent = await browser.waitFor((frame) => frame.type === "messag
 assert(directReplyEvent.message.authorId === caAuthorization.agent.id, "direct reply author did not match target agent");
 assert(directReplyEvent.message.channelId === directSend.channel.id, "direct reply channel did not match pending DM");
 assert(directReplyEvent.message.replyToMessageId === directSend.message.id, "direct reply did not correlate to Papa's message");
+assert(isCorrelatedNexusReply(directReplyEvent.message, directSend.message.id, pendingDirect), "matching Hermes reply did not satisfy the client correlation predicate");
 ca.autoAck = true;
 console.log("[e2e] direct receipt and reply correlation verified");
 

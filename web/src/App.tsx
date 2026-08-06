@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
+import { isCorrelatedNexusReply, type PendingNexusMessage } from "./lib/nexusReply.js";
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
 import { NexusView } from "./components/nexus/NexusView";
-import type { AccessKey, Agent, AgentSystemType, Channel, Config, Delivery, Message, NexusSendState, ProviderKey, User } from "./types";
+import type { AccessKey, Agent, AgentSystemType, BrowserEvent, Channel, Config, DeliveryStatus, Message, NexusSendState, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
@@ -805,8 +806,8 @@ export default function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const [nexusRefresh, setNexusRefresh] = useState(0);
   const [nexusSendState, setNexusSendState] = useState<NexusSendState | null>(null);
-  const pendingNexusMessagesRef = useRef(new Map<string, { agentId: string; channelId: string }>());
-  const receivedDeliveryIdsRef = useRef(new Set<string>());
+  const pendingNexusMessagesRef = useRef(new Map<string, PendingNexusMessage>());
+  const deliveryStatusesRef = useRef(new Map<string, DeliveryStatus>());
   const recentAgentRepliesRef = useRef(new Map<string, Message>());
 
   function mergeChannel(channel: Channel) {
@@ -815,12 +816,11 @@ export default function App() {
       : [channel, ...current]);
   }
 
-  function openCorrelatedReply(message: Message, pending: { agentId: string; channelId: string }) {
-    if (message.authorKind !== "agent" || message.authorId !== pending.agentId || message.channelId !== pending.channelId) return;
-    if (!message.replyToMessageId) return;
-    pendingNexusMessagesRef.current.delete(message.replyToMessageId);
-    recentAgentRepliesRef.current.delete(message.replyToMessageId);
-    setNexusSendState((current) => current?.messageId === message.replyToMessageId ? null : current);
+  function openCorrelatedReply(message: Message, pendingMessageId: string, pending: PendingNexusMessage) {
+    if (!isCorrelatedNexusReply(message, pendingMessageId, pending)) return;
+    pendingNexusMessagesRef.current.delete(pendingMessageId);
+    recentAgentRepliesRef.current.delete(pendingMessageId);
+    setNexusSendState((current) => current?.messageId === pendingMessageId ? null : current);
     setSelectedChannelId(message.channelId);
     setActiveView("chat");
     void api.listChannels().then((result) => setChannels(result.channels));
@@ -840,17 +840,17 @@ export default function App() {
       mergeChannel(result.channel);
       pendingNexusMessagesRef.current.set(result.message.id, { agentId: agent.id, channelId: result.channel.id });
       const deliveryId = result.delivery?.delivery.id ?? null;
-      const received = Boolean(deliveryId && receivedDeliveryIdsRef.current.has(deliveryId));
+      const eventStatus = deliveryId ? deliveryStatusesRef.current.get(deliveryId) : undefined;
       setNexusSendState({
         agentId: agent.id,
         agentName: agent.displayName,
         messageId: result.message.id,
         channelId: result.channel.id,
         deliveryId,
-        status: received ? "received" : result.delivery?.status ?? "queued"
+        status: eventStatus ?? result.delivery?.status ?? "queued"
       });
       const earlyReply = recentAgentRepliesRef.current.get(result.message.id);
-      if (earlyReply) openCorrelatedReply(earlyReply, { agentId: agent.id, channelId: result.channel.id });
+      if (earlyReply) openCorrelatedReply(earlyReply, result.message.id, { agentId: agent.id, channelId: result.channel.id });
     } catch (error) {
       setNexusSendState(null);
       throw error;
@@ -888,7 +888,7 @@ export default function App() {
     ws.onclose = () => setWsConnected(false);
     ws.onerror = () => setWsConnected(false);
     ws.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = JSON.parse(event.data) as BrowserEvent;
       if (payload.type === "agent_status") {
         setNexusRefresh((current) => current + 1);
         setAgents((current) =>
@@ -911,7 +911,7 @@ export default function App() {
       }
       if (payload.type === "message") {
         setNexusRefresh((current) => current + 1);
-        const message = payload.message as Message;
+        const message = payload.message;
         if (message.channelId === selectedChannelId) {
           setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
         }
@@ -922,16 +922,20 @@ export default function App() {
             if (oldestReplyId) recentAgentRepliesRef.current.delete(oldestReplyId);
           }
           const pending = pendingNexusMessagesRef.current.get(message.replyToMessageId);
-          if (pending) openCorrelatedReply(message, pending);
+          if (pending) openCorrelatedReply(message, message.replyToMessageId, pending);
         }
       }
-      if (payload.type === "delivery_status" && payload.status === "received") {
-        const delivery = payload.delivery as Delivery;
-        receivedDeliveryIdsRef.current.add(delivery.id);
-        setNexusSendState((current) => current?.deliveryId === delivery.id ? { ...current, status: "received" } : current);
+      if (payload.type === "delivery_status") {
+        const rank: Record<DeliveryStatus, number> = { queued: 0, sent: 1, received: 2 };
+        const previous = deliveryStatusesRef.current.get(payload.deliveryId);
+        const status = previous && rank[previous] > rank[payload.status] ? previous : payload.status;
+        deliveryStatusesRef.current.set(payload.deliveryId, status);
+        setNexusSendState((current) => current?.deliveryId === payload.deliveryId && rank[status] >= rank[current.status === "sending" ? "queued" : current.status]
+          ? { ...current, status }
+          : current);
       }
       if (payload.type === "message_updated") {
-        const message = payload.message as Message;
+        const message = payload.message;
         setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
       }
     };
@@ -996,7 +1000,7 @@ export default function App() {
     setWsConnected(false);
     setNexusSendState(null);
     pendingNexusMessagesRef.current.clear();
-    receivedDeliveryIdsRef.current.clear();
+    deliveryStatusesRef.current.clear();
     recentAgentRepliesRef.current.clear();
   }
 

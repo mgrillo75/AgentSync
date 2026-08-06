@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"tsc -w -p tsconfig.server.json\" \"vite --host 0.0.0.0\" \"node --watch dist/server/index.js\"",
-    "build": "tsc -p tsconfig.server.json && vite build",
+    "build": "tsc -p tsconfig.server.json && vite build --configLoader native",
     "heroku-postbuild": "npm run build",
     "start": "node dist/server/index.js",
     "test:e2e": "node scripts/e2e-relay.mjs",
