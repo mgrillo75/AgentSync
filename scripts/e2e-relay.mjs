@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import WebSocket from "ws";
+import { isCorrelatedNexusReply } from "../web/src/lib/nexusReply.js";
 
 const baseUrl = process.env.E2E_BASE_URL || "http://localhost:3100";
 const relayUrl = baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:") + "/relay";
+const browserUrl = baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:") + "/browser";
 const founderAccessKey = process.env.E2E_ACCESS_KEY;
 
 function assert(condition, message) {
@@ -113,23 +115,94 @@ async function expectRelayTokenRejected(token) {
   });
 }
 
-class RelayClient {
-  constructor(name, gatewayId, secret) {
-    this.name = name;
-    this.gatewayId = gatewayId;
+class FrameClient {
+  constructor() {
     this.frames = [];
     this.waiters = [];
+  }
+
+  record(frame) {
+    this.frames.push(frame);
+    for (const waiter of [...this.waiters]) {
+      if (waiter.predicate(frame)) {
+        clearTimeout(waiter.timeout);
+        this.waiters = this.waiters.filter((item) => item !== waiter);
+        waiter.resolve(frame);
+      }
+    }
+  }
+
+  waitFor(predicate, ms = 5000) {
+    const existing = this.frames.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve,
+        timeout: setTimeout(() => {
+          this.waiters = this.waiters.filter((item) => item !== waiter);
+          reject(new Error("timed out waiting for frame"));
+        }, ms)
+      };
+      this.waiters.push(waiter);
+    });
+  }
+}
+
+class BrowserClient extends FrameClient {
+  constructor(cookie) {
+    super();
+    this.ws = new WebSocket(browserUrl, { headers: { Cookie: cookie } });
+  }
+
+  async open() {
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("browser client timed out opening")), 5000);
+        this.ws.once("open", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        this.ws.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+    }
+    this.ws.on("message", (data) => this.record(JSON.parse(data.toString("utf8"))));
+  }
+
+  close() {
+    this.ws.close();
+  }
+}
+
+class RelayClient extends FrameClient {
+  constructor(name, gatewayId, secret) {
+    super();
+    this.name = name;
+    this.gatewayId = gatewayId;
     this.buffer = "";
+    this.autoAck = true;
     this.ws = new WebSocket(relayUrl, {
       headers: { Authorization: `Bearer ${makeUpgradeToken(gatewayId, secret)}` }
     });
   }
 
   async open() {
-    await new Promise((resolve, reject) => {
-      this.ws.once("open", resolve);
-      this.ws.once("error", reject);
-    });
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`${this.name} timed out opening`)), 5000);
+        this.ws.once("open", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        this.ws.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+    }
     this.ws.on("message", (data) => this.onMessage(data.toString("utf8")));
     this.send({ type: "hello", platform: "relay", botId: this.name });
     const descriptor = await this.waitFor((frame) => frame.type === "descriptor");
@@ -143,17 +216,8 @@ class RelayClient {
     for (const line of lines) {
       if (!line.trim()) continue;
       const frame = JSON.parse(line);
-      this.frames.push(frame);
-      for (const waiter of [...this.waiters]) {
-        if (waiter.predicate(frame)) {
-          clearTimeout(waiter.timeout);
-          this.waiters = this.waiters.filter((item) => item !== waiter);
-          waiter.resolve(frame);
-        }
-      }
-      if (frame.type === "inbound" && frame.bufferId) {
-        this.send({ type: "inbound_ack", bufferId: frame.bufferId });
-      }
+      this.record(frame);
+      if (this.autoAck && frame.type === "inbound" && frame.bufferId) this.ack(frame);
     }
   }
 
@@ -161,20 +225,8 @@ class RelayClient {
     this.ws.send(`${JSON.stringify(frame)}\n`);
   }
 
-  waitFor(predicate, ms = 5000) {
-    const existing = this.frames.find(predicate);
-    if (existing) return Promise.resolve(existing);
-    return new Promise((resolve, reject) => {
-      const waiter = {
-        predicate,
-        resolve,
-        timeout: setTimeout(() => {
-          this.waiters = this.waiters.filter((item) => item !== waiter);
-          reject(new Error(`${this.name} timed out waiting for frame`));
-        }, ms)
-      };
-      this.waiters.push(waiter);
-    });
+  ack(frame) {
+    this.send({ type: "inbound_ack", bufferId: frame.bufferId });
   }
 
   close() {
@@ -206,6 +258,7 @@ const caCookie = caMember.cookie;
 const txCookie = txMember.cookie;
 const caAuthorization = await createAuthorization(caCookie);
 const txEnroll = await enroll(await createEnrollment(txCookie), `gw-tx-${unique}`);
+console.log("[e2e] identities ready");
 
 const { body: labelBody } = await json(`/api/agents/${caAuthorization.agent.id}`, {
   method: "PATCH",
@@ -239,9 +292,30 @@ const { body: channelBody } = await json("/api/channels", {
 });
 const channel = channelBody.channel;
 
+const browser = new BrowserClient(caCookie);
+
+await browser.open();
+const { body: queuedDirect } = await json(`/api/agents/${caAuthorization.agent.id}/messages`, {
+  method: "POST",
+  headers: { Cookie: caCookie },
+  body: JSON.stringify({ content: "Queued direct nexus ping" })
+});
+assert(queuedDirect.channel.kind === "dm", "direct send did not return its DM channel");
+assert(queuedDirect.delivery?.status === "queued", `offline direct send was not reported as queued: ${JSON.stringify(queuedDirect.delivery)}`);
+const queuedEvent = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "queued");
+assert(queuedEvent.messageId === queuedDirect.message.id, "queued event message correlation mismatch");
+assert(queuedEvent.agentId === caAuthorization.agent.id, "queued event agent correlation mismatch");
+assert(queuedEvent.channelId === queuedDirect.channel.id, "queued event channel correlation mismatch");
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "received"), "offline delivery was marked received before reconnect");
+console.log("[e2e] queued delivery verified");
+
 const ca = new RelayClient("California", caAuthorization.gatewayId, caAuthorization.secret);
 const tx = new RelayClient("Texas", txEnroll.gatewayId, txEnroll.secret);
 await Promise.all([ca.open(), tx.open()]);
+await ca.waitFor((frame) => frame.type === "inbound" && frame.event.text === "Queued direct nexus ping");
+const replayReceipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === queuedDirect.delivery.delivery.id && frame.status === "received");
+assert(replayReceipt.messageId === queuedDirect.message.id, "reconnect receipt lost message correlation");
+console.log("[e2e] relay clients connected and backlog drained");
 
 await json(`/api/channels/${channel.id}/messages`, {
   method: "POST",
@@ -270,16 +344,76 @@ const result = await ca.waitFor((frame) => frame.type === "outbound_result" && f
 assert(result.result.success === true, "agent outbound send failed");
 const peerFrame = await tx.waitFor((frame) => frame.type === "inbound" && frame.event.text.includes("California agent"));
 assert(peerFrame.event.source.user_name === "California Nexus Agent", "peer inbound author mismatch");
+console.log("[e2e] shared relay exchange verified");
 
-await json(`/api/agents/${caAuthorization.agent.id}/messages`, {
+ca.autoAck = false;
+const { body: directSend } = await json(`/api/agents/${caAuthorization.agent.id}/messages`, {
   method: "POST",
   headers: { Cookie: caCookie },
   body: JSON.stringify({ content: "Direct nexus ping" })
 });
+assert(directSend.channel.kind === "dm", "direct send response omitted DM channel");
+assert(directSend.delivery.status === "sent", "connected direct send was not reported as sent");
+const sentEvent = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "sent");
+assert(sentEvent.messageId === directSend.message.id, "sent event message correlation mismatch");
 const directFrame = await ca.waitFor((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping");
 assert(directFrame.event.source.chat_id !== channel.id, "direct message reused the shared channel");
 await new Promise((resolve) => setTimeout(resolve, 300));
 assert(!tx.frames.some((frame) => frame.type === "inbound" && frame.event.text === "Direct nexus ping"), "direct message reached the non-target agent");
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received"), "delivery was marked received before Hermes acknowledged it");
+tx.send({ type: "inbound_ack", bufferId: directFrame.bufferId });
+await new Promise((resolve) => setTimeout(resolve, 300));
+assert(!browser.frames.some((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received"), "non-target agent falsely acknowledged the delivery");
+ca.ack(directFrame);
+const receipt = await browser.waitFor((frame) => frame.type === "delivery_status" && frame.deliveryId === directSend.delivery.delivery.id && frame.status === "received");
+assert(receipt.status === "received", "Hermes acknowledgment did not publish received status");
+
+const pendingDirect = { agentId: caAuthorization.agent.id, channelId: directSend.channel.id };
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: directSend.channel.id,
+  replyToMessageId: null
+}, directSend.message.id, pendingDirect), "unsolicited agent message falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: directSend.channel.id,
+  replyToMessageId: queuedDirect.message.id
+}, directSend.message.id, pendingDirect), "reply to another message falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: "agt_unrelated",
+  channelId: directSend.channel.id,
+  replyToMessageId: directSend.message.id
+}, directSend.message.id, pendingDirect), "reply from another agent falsely confirmed the pending send");
+assert(!isCorrelatedNexusReply({
+  authorKind: "agent",
+  authorId: caAuthorization.agent.id,
+  channelId: channel.id,
+  replyToMessageId: directSend.message.id
+}, directSend.message.id, pendingDirect), "reply in another channel falsely confirmed the pending send");
+
+const directReplyRequestId = crypto.randomUUID().replaceAll("-", "");
+ca.send({
+  type: "outbound",
+  requestId: directReplyRequestId,
+  action: {
+    op: "send",
+    chat_id: directSend.channel.id,
+    content: "Hermes confirms the direct message",
+    reply_to: directSend.message.id
+  }
+});
+const directReplyResult = await ca.waitFor((frame) => frame.type === "outbound_result" && frame.requestId === directReplyRequestId);
+assert(directReplyResult.result.success === true, "Hermes direct reply failed");
+const directReplyEvent = await browser.waitFor((frame) => frame.type === "message" && frame.message?.id === directReplyResult.result.message_id);
+assert(directReplyEvent.message.authorId === caAuthorization.agent.id, "direct reply author did not match target agent");
+assert(directReplyEvent.message.channelId === directSend.channel.id, "direct reply channel did not match pending DM");
+assert(directReplyEvent.message.replyToMessageId === directSend.message.id, "direct reply did not correlate to Papa's message");
+assert(isCorrelatedNexusReply(directReplyEvent.message, directSend.message.id, pendingDirect), "matching Hermes reply did not satisfy the client correlation predicate");
+ca.autoAck = true;
+console.log("[e2e] direct receipt and reply correlation verified");
 
 const { body: nexusBody } = await json("/api/nexus/graph", { headers: { Cookie: caCookie } });
 assert(nexusBody.member.id === caMember.user.id, "Nexus member mismatch");
@@ -328,8 +462,10 @@ const reenrollResponse = await fetch(`${baseUrl}/relay/enroll`, {
   })
 });
 assert(reenrollResponse.status === 403, `revoked gateway re-enroll returned ${reenrollResponse.status}, expected 403`);
+console.log("[e2e] revocation verified");
 
 tx.close();
+browser.close();
 
 console.log("Relay E2E passed:", {
   channelId: channel.id,

@@ -1,5 +1,5 @@
 import { useState, type PointerEvent } from "react";
-import type { Agent, User } from "../../types";
+import type { Agent, NexusSendState, User } from "../../types";
 import { AgentAvatar } from "../relays/AgentAvatar";
 
 export type NexusSendTarget = { agentId: string; name: string; x: number; y: number };
@@ -15,6 +15,7 @@ type NexusNodeProps = {
   onEdit?: (agent: Agent) => Promise<void>;
   sendTargets?: NexusSendTarget[];
   onSend?: (agentId: string, content: string) => Promise<void>;
+  sendState?: NexusSendState | null;
 };
 
 function initials(name: string) {
@@ -23,7 +24,7 @@ function initials(name: string) {
 
 export function NexusNode({
   participant, selected, dragging, onSelect, onPointerDown, onDragHandlePointerDown,
-  onConsumeDragMoved, onEdit, sendTargets = [], onSend
+  onConsumeDragMoved, onEdit, sendTargets = [], onSend, sendState
 }: NexusNodeProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -69,6 +70,14 @@ export function NexusNode({
             rows={3}
             wrap="soft"
           />
+          {sendState ? (
+            <p className={`nexus-delivery-status ${sendState.status}`} role="status">
+              {sendState.status === "sending" ? `Sending to ${sendState.agentName}...` : null}
+              {sendState.status === "queued" ? `Queued for ${sendState.agentName}.` : null}
+              {sendState.status === "sent" ? `Sent to ${sendState.agentName} — waiting for receipt...` : null}
+              {sendState.status === "received" ? `${sendState.agentName} received it — waiting for reply...` : null}
+            </p>
+          ) : null}
         </div>
       ) : null}
 

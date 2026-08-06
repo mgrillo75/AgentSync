@@ -1,12 +1,17 @@
 import type { BrowserHub } from "./browserHub.js";
 import type { Store } from "../db/store.js";
-import type { Agent, Message, RelayInboundEvent } from "../types.js";
+import type { Agent, Delivery, Message, RelayInboundEvent } from "../types.js";
 
 export interface AgentDelivery {
   deliverToAgent(agent: Agent, event: RelayInboundEvent, deliveryId?: string): Promise<boolean>;
 }
 
 const AGENT_LOOP_LIMIT = 6;
+
+export type DeliveryAttempt = {
+  delivery: Delivery;
+  status: "queued" | "sent";
+};
 
 export class MessageRouter {
   constructor(
@@ -43,7 +48,7 @@ export class MessageRouter {
     userName: string;
     content: string;
     replyToMessageId?: string | null;
-  }): Promise<Message> {
+  }): Promise<{ message: Message; deliveries: DeliveryAttempt[] }> {
     const channel = await this.store.getChannel(input.channelId);
     if (!channel) throw new Error("channel not found");
 
@@ -62,8 +67,8 @@ export class MessageRouter {
       channelId: input.channelId,
       message
     });
-    await this.deliverMessageToAgents(message, channel.name);
-    return message;
+    const deliveries = await this.deliverMessageToAgents(message, channel.name, undefined, input.userId);
+    return { message, deliveries };
   }
 
   async routeAgentMessage(input: {
@@ -104,9 +109,15 @@ export class MessageRouter {
     return { message, forwarded: true, throttled: false };
   }
 
-  async deliverMessageToAgents(message: Message, channelName: string, excludeAgentId?: string): Promise<void> {
+  async deliverMessageToAgents(
+    message: Message,
+    channelName: string,
+    excludeAgentId?: string,
+    notifyUserId?: string
+  ): Promise<DeliveryAttempt[]> {
     const agents = await this.store.listAgentsForChannel(message.channelId);
     const event = this.buildInboundEvent(message, channelName);
+    const attempts: DeliveryAttempt[] = [];
 
     for (const agent of agents) {
       if (agent.revokedAt) continue;
@@ -118,7 +129,21 @@ export class MessageRouter {
         event
       });
       const delivered = await this.agentDelivery.deliverToAgent(agent, event, delivery.id);
-      if (delivered) await this.store.markDeliveryDelivered(delivery.id);
+      const current = delivered ? await this.store.markDeliveryDelivered(delivery.id) : delivery;
+      const attempt = { delivery: current ?? delivery, status: delivered ? "sent" : "queued" } satisfies DeliveryAttempt;
+      attempts.push(attempt);
+      if (notifyUserId) {
+        this.browserHub.sendToUser(notifyUserId, {
+          type: "delivery_status",
+          status: attempt.status,
+          delivery: attempt.delivery,
+          deliveryId: attempt.delivery.id,
+          messageId: attempt.delivery.messageId,
+          agentId: attempt.delivery.agentId,
+          channelId: attempt.delivery.channelId
+        });
+      }
     }
+    return attempts;
   }
 }

@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
-import { NODE_H, NODE_W } from "../../lib/swarmLayout";
-import type { Agent, NexusGraph } from "../../types";
+import { NODE_W } from "../../lib/swarmLayout";
+import type { Agent, NexusGraph, NexusSendState } from "../../types";
 import { useSwarmDrag } from "../relays/useSwarmDrag";
 import { useSwarmPanZoom } from "../relays/useSwarmPanZoom";
 import { NexusNode, type NexusSendTarget } from "./NexusNode";
 
 const RADIUS = 280;
-const HUMAN_NODE_H = NODE_H;
+const NEXUS_NODE_H = 190;
 type Position = { x: number; y: number };
 
 function graphId(kind: "user" | "agent", id: string) { return `${kind}:${id}`; }
-function participantHeight(kind: "human" | "agent") { return kind === "human" ? HUMAN_NODE_H : NODE_H; }
+function participantHeight(_kind: "human" | "agent") { return NEXUS_NODE_H; }
 
 function positionBounds(participants: Array<{ id: string; kind: "human" | "agent" }>, positions: Map<string, Position>) {
   const visible = participants.flatMap((participant) => {
@@ -36,13 +36,22 @@ function borderPoint(from: Position, fromHeight: number, to: Position, toHeight:
   return { x: centerX + dx * scale, y: centerY + dy * scale };
 }
 
-export function NexusView({ live, refreshSignal }: { live: boolean; refreshSignal: number }) {
+export function NexusView({
+  live,
+  refreshSignal,
+  sendState,
+  onSendToAgent
+}: {
+  live: boolean;
+  refreshSignal: number;
+  sendState: NexusSendState | null;
+  onSendToAgent: (agent: Agent, content: string) => Promise<void>;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const didInitialFitRef = useRef(false);
   const [graph, setGraph] = useState<NexusGraph | null>(null);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [transmittingAgentId, setTransmittingAgentId] = useState<string | null>(null);
   const [positionOverrides, setPositionOverrides] = useState<Map<string, Position>>(() => new Map());
   const { transform, handlers: panHandlers, zoomIn, zoomOut, fitToScreen } = useSwarmPanZoom();
 
@@ -70,7 +79,7 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
       if (override) return map.set(participant.id, override);
       if (index === 0) return map.set(participant.id, { x: 0, y: 0 });
       const angle = ((index - 1) / Math.max(1, participants.length - 1)) * Math.PI * 2;
-      map.set(participant.id, { x: Math.cos(angle) * RADIUS, y: HUMAN_NODE_H / 2 + Math.sin(angle) * RADIUS - NODE_H / 2 });
+      map.set(participant.id, { x: Math.cos(angle) * RADIUS, y: Math.sin(angle) * RADIUS });
     });
     return map;
   }, [participants, positionOverrides]);
@@ -111,27 +120,23 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
       if (participant.kind !== "agent") return [];
       const agentPosition = renderPositions.get(participant.id);
       if (!agentPosition) return [];
-      const point = borderPoint(humanPosition, HUMAN_NODE_H, agentPosition, NODE_H);
+      const point = borderPoint(humanPosition, NEXUS_NODE_H, agentPosition, NEXUS_NODE_H);
       return [{ agentId: participant.agent.id, name: participant.agent.displayName, x: point.x - humanPosition.x, y: point.y - humanPosition.y }];
     });
   }, [human, participants, renderPositions]);
 
   const send = useCallback(async (agentId: string, content: string) => {
-    const startedAt = Date.now();
-    setTransmittingAgentId(agentId);
+    const agent = graph?.agents.find((item) => item.id === agentId);
+    if (!agent) throw new Error("Agent is no longer connected.");
     try {
       setError("");
-      await api.sendToAgent(agentId, content);
+      await onSendToAgent(agent, content);
       await reload();
-      const remaining = Math.max(0, 900 - (Date.now() - startedAt));
-      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not send message.");
       throw cause;
-    } finally {
-      setTransmittingAgentId(null);
     }
-  }, [reload]);
+  }, [graph, onSendToAgent, reload]);
 
   return (
     <section className="swarm-shell nexus-shell">
@@ -153,13 +158,13 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
             const end = borderPoint(to, participantHeight(toParticipant.kind), from, participantHeight(fromParticipant.kind));
             return <line key={`${link.fromKind}:${link.fromId}-${link.toKind}:${link.toId}`} className="nexus-edge" x1={start.x} y1={start.y} x2={end.x} y2={end.y} style={{ strokeWidth: Math.min(5, 1.5 + Math.log2(link.count + 1)) }} />;
           })}
-          {transmittingAgentId && human ? (() => {
-            const target = participants.find((participant) => participant.kind === "agent" && participant.agent.id === transmittingAgentId);
+          {sendState && sendState.status !== "received" && human ? (() => {
+            const target = participants.find((participant) => participant.kind === "agent" && participant.agent.id === sendState.agentId);
             const from = renderPositions.get(human.id);
             const to = target && renderPositions.get(target.id);
             if (!target || !from || !to) return null;
-            const start = borderPoint(from, HUMAN_NODE_H, to, NODE_H);
-            const end = borderPoint(to, NODE_H, from, HUMAN_NODE_H);
+            const start = borderPoint(from, NEXUS_NODE_H, to, NEXUS_NODE_H);
+            const end = borderPoint(to, NEXUS_NODE_H, from, NEXUS_NODE_H);
             return (
               <g className="nexus-transmission">
                 <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} />
@@ -173,7 +178,7 @@ export function NexusView({ live, refreshSignal }: { live: boolean; refreshSigna
           {participants.map((participant) => {
             const position = renderPositions.get(participant.id);
             if (!position) return null;
-            return <div className="swarm-node-position" key={participant.id} style={{ left: position.x, top: position.y }}><NexusNode participant={participant} selected={selectedId === participant.id} dragging={dragState?.agentId === participant.id} onSelect={() => setSelectedId(participant.id)} onPointerDown={(event) => startDrag(event, participant.id)} onDragHandlePointerDown={(event) => startDrag(event, participant.id)} onConsumeDragMoved={consumeLastDragMoved} onEdit={participant.kind === "agent" ? editAgent : undefined} sendTargets={participant.kind === "human" ? sendTargets : undefined} onSend={participant.kind === "human" ? send : undefined} /></div>;
+            return <div className="swarm-node-position" key={participant.id} style={{ left: position.x, top: position.y }}><NexusNode participant={participant} selected={selectedId === participant.id} dragging={dragState?.agentId === participant.id} onSelect={() => setSelectedId(participant.id)} onPointerDown={(event) => startDrag(event, participant.id)} onDragHandlePointerDown={(event) => startDrag(event, participant.id)} onConsumeDragMoved={consumeLastDragMoved} onEdit={participant.kind === "agent" ? editAgent : undefined} sendTargets={participant.kind === "human" ? sendTargets : undefined} onSend={participant.kind === "human" ? send : undefined} sendState={participant.kind === "human" ? sendState : undefined} /></div>;
           })}
         </div>
       </div>

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AgentSync — System Architecture",
+    "subtitle": "Heroku relay hub pairing two Hermes agents · no port forwarding",
+    "output": "agentsync-architecture.html"
+  },
+  "components": [
+    { "id": "browsers", "type": "external", "label": "Founders' Browsers", "sublabel": "React SPA · REST + WS", "pos": [40, 185], "size": [140, 64] },
+    { "id": "fastify", "type": "backend", "label": "Fastify REST API", "sublabel": "/api/* · /relay/enroll · SPA", "tag": "cookie session", "pos": [250, 100], "size": [150, 60] },
+    { "id": "browserhub", "type": "backend", "label": "BrowserHub", "sublabel": "WS /browser push", "pos": [250, 260], "size": [150, 60] },
+    { "id": "router", "type": "messagebus", "label": "MessageRouter", "sublabel": "persist · broadcast · deliver", "tag": "loop guard ×6", "pos": [480, 180], "size": [150, 64] },
+    { "id": "relayhub", "type": "backend", "label": "RelayHub", "sublabel": "WS /relay · NDJSON", "tag": "HMAC bearer", "pos": [700, 180], "size": [150, 60] },
+    { "id": "gateways", "type": "external", "label": "Hermes Gateways", "sublabel": "paired agents A ↔ B", "tag": "no public IP needed", "pos": [890, 180], "size": [140, 64] },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "Heroku Postgres · 10 tables", "pos": [480, 340], "size": [150, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Heroku", "wraps": ["fastify", "browserhub", "router", "relayhub", "db"] },
+    { "kind": "security-group", "label": "web dyno ×1 · Fastify :3000", "wraps": ["fastify", "browserhub", "router", "relayhub"] }
+  ],
+  "connections": [
+    { "from": "browsers", "to": "fastify", "label": "HTTPS REST", "variant": "emphasis" },
+    { "from": "browsers", "to": "browserhub", "label": "WSS /browser" },
+    { "from": "fastify", "to": "router" },
+    { "from": "router", "to": "browserhub", "label": "broadcast", "fromSide": "left", "toSide": "right" },
+    { "from": "router", "to": "relayhub", "label": "inbound", "variant": "emphasis" },
+    { "from": "relayhub", "to": "router", "label": "outbound ops", "fromSide": "top", "toSide": "top", "route": "orthogonal-v" },
+    { "from": "gateways", "to": "relayhub", "label": "WSS", "variant": "emphasis" },
+    { "from": "router", "to": "db", "label": "Store", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Message flow", "items": ["Browsers POST via REST; pushes arrive on /browser WS", "Router persists, broadcasts, queues per-agent deliveries", "Loop guard caps agent-to-agent streaks at 6"] },
+    { "dot": "emerald", "title": "Relay protocol", "items": ["Gateways dial out via WSS — no port forwarding", "NDJSON frames: hello · inbound · outbound · acks", "delivery_queue drains on reconnect · 30s ping keepalive"] },
+    { "dot": "rose", "title": "Security & storage", "items": ["ak_ access keys → sha256 → httpOnly session cookie", "Agent secrets + provider keys AES-256-GCM encrypted", "PgStore when DATABASE_URL set, in-memory otherwise"] }
+  ]
+}

@@ -89,6 +89,58 @@ export type Message = {
   editedAt: string | null;
 };
 
+export type Delivery = {
+  id: string;
+  agentId: string;
+  channelId: string;
+  messageId: string;
+  deliveredAt: string | null;
+  ackedAt: string | null;
+  createdAt: string;
+};
+
+export type DeliveryAttempt = {
+  delivery: Delivery;
+  status: "queued" | "sent";
+};
+
+export type DirectSendResult = {
+  message: Message;
+  channel: Channel;
+  delivery: DeliveryAttempt | null;
+};
+
+export type DeliveryStatus = "queued" | "sent" | "received";
+
+export type DeliveryStatusEvent = {
+  type: "delivery_status";
+  status: DeliveryStatus;
+  delivery: Delivery;
+  deliveryId: string;
+  messageId: string;
+  agentId: string;
+  channelId: string;
+};
+
+export type BrowserEvent =
+  | { type: "agent_status"; agentId: string; gatewayId: string; connected: boolean }
+  | { type: "agent_revoked"; agentId: string; gatewayId: string }
+  | { type: "message"; channelId: string; message: Message }
+  | { type: "message_updated"; channelId: string; message: Message }
+  | DeliveryStatusEvent
+  | { type: "typing"; channelId: string; agentId: string }
+  | { type: "channel"; channel: Channel }
+  | { type: "system"; message: string };
+
+export type NexusSendState = {
+  agentId: string;
+  agentName: string;
+  messageId: string | null;
+  channelId: string | null;
+  deliveryId: string | null;
+  status: "sending" | DeliveryStatus;
+};
+
 export type Config = {
   relayUrl: string;
   baseUrl: string;
