@@ -1,4 +1,4 @@
-import type { AccessKey, Agent, Channel, Config, Message, NexusGraph, ProviderKey, User } from "../types";
+import type { AccessKey, Agent, Channel, Config, DeliveryAttempt, Message, NexusGraph, ProviderKey, User } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -79,7 +79,7 @@ export const api = {
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   nexusGraph: () => request<NexusGraph>("/api/nexus/graph"),
   sendToAgent: (agentId: string, content: string) =>
-    request<{ message: Message; channelId: string }>(`/api/agents/${agentId}/messages`, {
+    request<{ message: Message; channel: Channel; delivery: DeliveryAttempt | null }>(`/api/agents/${agentId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content })
     }),

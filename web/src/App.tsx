@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, browserWsUrl } from "./lib/api";
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
 import { NexusView } from "./components/nexus/NexusView";
-import type { AccessKey, Agent, AgentSystemType, Channel, Config, Message, ProviderKey, User } from "./types";
+import type { AccessKey, Agent, AgentSystemType, Channel, Config, Delivery, Message, NexusSendState, ProviderKey, User } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
@@ -491,12 +491,14 @@ function ProvidersPanel() {
 
 function ChannelPanel({
   channels,
+  agents,
   members,
   selectedId,
   onSelect,
   onCreated
 }: {
   channels: Channel[];
+  agents: Agent[];
   members: User[];
   selectedId: string | null;
   onSelect: (channelId: string) => void;
@@ -505,6 +507,13 @@ function ChannelPanel({
   const [name, setName] = useState("Shared Agent Channel");
   const [inviteUserId, setInviteUserId] = useState("");
   const [error, setError] = useState("");
+  const sharedChannels = channels.filter((channel) => channel.kind === "chat");
+  const directChannels = channels.filter((channel) => channel.kind === "dm");
+
+  function channelLabel(channel: Channel) {
+    if (channel.kind !== "dm") return channel.name;
+    return agents.find((agent) => agent.id === channel.dmAgentId)?.displayName ?? "Direct message";
+  }
 
   async function createChannel(event: FormEvent) {
     event.preventDefault();
@@ -537,14 +546,28 @@ function ChannelPanel({
       </form>
       <div className="channel-list">
         {channels.length === 0 ? <p className="muted">Create a channel to start messaging connected agents.</p> : null}
-        {channels.map((channel) => (
+        {directChannels.length > 0 ? <p className="eyebrow channel-group-label">Direct messages</p> : null}
+        {directChannels.map((channel) => (
           <button
             key={channel.id}
             className={selectedId === channel.id ? "channel-row active" : "channel-row"}
             onClick={() => onSelect(channel.id)}
           >
             <span>
-              <strong>{channel.name}</strong>
+              <strong>{channelLabel(channel)}</strong>
+              <small>Direct message</small>
+            </span>
+          </button>
+        ))}
+        {sharedChannels.length > 0 ? <p className="eyebrow channel-group-label">Shared channels</p> : null}
+        {sharedChannels.map((channel) => (
+          <button
+            key={channel.id}
+            className={selectedId === channel.id ? "channel-row active" : "channel-row"}
+            onClick={() => onSelect(channel.id)}
+          >
+            <span>
+              <strong>{channelLabel(channel)}</strong>
               <small>{channel.members.length} members</small>
             </span>
           </button>
@@ -554,7 +577,7 @@ function ChannelPanel({
   );
 }
 
-function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; messages: Message[]; onSend: (content: string) => Promise<void> }) {
+function ChatPanel({ channel, title, messages, onSend }: { channel: Channel | null; title: string; messages: Message[]; onSend: (content: string) => Promise<void> }) {
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
 
@@ -583,8 +606,8 @@ function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; mes
     <section className="panel chat-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Shared Chat</p>
-          <h2>{channel.name}</h2>
+          <p className="eyebrow">{channel.kind === "dm" ? "Direct message" : "Shared chat"}</p>
+          <h2>{title}</h2>
         </div>
         {channel.agentStreakCount > 6 ? <span className="badge">Loop guard active</span> : null}
       </div>
@@ -600,7 +623,7 @@ function ChatPanel({ channel, messages, onSend }: { channel: Channel | null; mes
         ))}
       </div>
       <form onSubmit={submit} className="composer">
-        <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="Send a message to the shared agents..." />
+        <input value={content} onChange={(event) => setContent(event.target.value)} placeholder={channel.kind === "dm" ? "Reply in this direct message..." : "Send a message to the shared agents..."} />
         <button type="submit">Send</button>
       </form>
       {error ? <p className="error">{error}</p> : null}
@@ -781,6 +804,58 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>("dashboard");
   const [wsConnected, setWsConnected] = useState(false);
   const [nexusRefresh, setNexusRefresh] = useState(0);
+  const [nexusSendState, setNexusSendState] = useState<NexusSendState | null>(null);
+  const pendingNexusMessagesRef = useRef(new Map<string, { agentId: string; channelId: string }>());
+  const receivedDeliveryIdsRef = useRef(new Set<string>());
+  const recentAgentRepliesRef = useRef(new Map<string, Message>());
+
+  function mergeChannel(channel: Channel) {
+    setChannels((current) => current.some((item) => item.id === channel.id)
+      ? current.map((item) => item.id === channel.id ? channel : item)
+      : [channel, ...current]);
+  }
+
+  function openCorrelatedReply(message: Message, pending: { agentId: string; channelId: string }) {
+    if (message.authorKind !== "agent" || message.authorId !== pending.agentId || message.channelId !== pending.channelId) return;
+    if (!message.replyToMessageId) return;
+    pendingNexusMessagesRef.current.delete(message.replyToMessageId);
+    recentAgentRepliesRef.current.delete(message.replyToMessageId);
+    setNexusSendState((current) => current?.messageId === message.replyToMessageId ? null : current);
+    setSelectedChannelId(message.channelId);
+    setActiveView("chat");
+    void api.listChannels().then((result) => setChannels(result.channels));
+  }
+
+  async function sendNexusMessage(agent: Agent, content: string) {
+    setNexusSendState({
+      agentId: agent.id,
+      agentName: agent.displayName,
+      messageId: null,
+      channelId: null,
+      deliveryId: null,
+      status: "sending"
+    });
+    try {
+      const result = await api.sendToAgent(agent.id, content);
+      mergeChannel(result.channel);
+      pendingNexusMessagesRef.current.set(result.message.id, { agentId: agent.id, channelId: result.channel.id });
+      const deliveryId = result.delivery?.delivery.id ?? null;
+      const received = Boolean(deliveryId && receivedDeliveryIdsRef.current.has(deliveryId));
+      setNexusSendState({
+        agentId: agent.id,
+        agentName: agent.displayName,
+        messageId: result.message.id,
+        channelId: result.channel.id,
+        deliveryId,
+        status: received ? "received" : result.delivery?.status ?? "queued"
+      });
+      const earlyReply = recentAgentRepliesRef.current.get(result.message.id);
+      if (earlyReply) openCorrelatedReply(earlyReply, { agentId: agent.id, channelId: result.channel.id });
+    } catch (error) {
+      setNexusSendState(null);
+      throw error;
+    }
+  }
 
   async function refresh() {
     const [cfg, me] = await Promise.all([api.config(), api.me()]);
@@ -796,9 +871,9 @@ export default function App() {
       setMembers([]);
       setAccessKeys([]);
     }
-    const firstChat = me.channels.find((channel) => channel.kind !== "dm");
-    if (!selectedChannelId || !me.channels.some((channel) => channel.id === selectedChannelId && channel.kind !== "dm")) {
-      setSelectedChannelId(firstChat?.id ?? null);
+    const firstChannel = me.channels.find((channel) => channel.kind !== "dm") ?? me.channels[0];
+    if (!selectedChannelId || !me.channels.some((channel) => channel.id === selectedChannelId)) {
+      setSelectedChannelId(firstChannel?.id ?? null);
     }
   }
 
@@ -840,6 +915,20 @@ export default function App() {
         if (message.channelId === selectedChannelId) {
           setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
         }
+        if (message.authorKind === "agent" && message.replyToMessageId) {
+          recentAgentRepliesRef.current.set(message.replyToMessageId, message);
+          if (recentAgentRepliesRef.current.size > 100) {
+            const oldestReplyId = recentAgentRepliesRef.current.keys().next().value;
+            if (oldestReplyId) recentAgentRepliesRef.current.delete(oldestReplyId);
+          }
+          const pending = pendingNexusMessagesRef.current.get(message.replyToMessageId);
+          if (pending) openCorrelatedReply(message, pending);
+        }
+      }
+      if (payload.type === "delivery_status" && payload.status === "received") {
+        const delivery = payload.delivery as Delivery;
+        receivedDeliveryIdsRef.current.add(delivery.id);
+        setNexusSendState((current) => current?.deliveryId === delivery.id ? { ...current, status: "received" } : current);
       }
       if (payload.type === "message_updated") {
         const message = payload.message as Message;
@@ -860,19 +949,24 @@ export default function App() {
     void api.listMessages(selectedChannelId).then((result) => setMessages(result.messages));
   }, [selectedChannelId]);
 
-  const chatChannels = useMemo(() => channels.filter((channel) => channel.kind !== "dm"), [channels]);
+  const sharedChannels = useMemo(() => channels.filter((channel) => channel.kind !== "dm"), [channels]);
   const selectedChannel = useMemo(
-    () => chatChannels.find((channel) => channel.id === selectedChannelId) ?? null,
-    [chatChannels, selectedChannelId]
+    () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
+    [channels, selectedChannelId]
   );
+  const selectedChannelTitle = useMemo(() => {
+    if (!selectedChannel) return "";
+    if (selectedChannel.kind !== "dm") return selectedChannel.name;
+    return agents.find((agent) => agent.id === selectedChannel.dmAgentId)?.displayName ?? "Direct message";
+  }, [agents, selectedChannel]);
 
   async function reloadLists() {
     const me = await api.me();
     setUser(me.user);
     setAgents(me.agents);
     setChannels(me.channels);
-    if (!me.channels.some((channel) => channel.id === selectedChannelId && channel.kind !== "dm")) {
-      setSelectedChannelId(me.channels.find((channel) => channel.kind !== "dm")?.id ?? null);
+    if (!me.channels.some((channel) => channel.id === selectedChannelId)) {
+      setSelectedChannelId((me.channels.find((channel) => channel.kind !== "dm") ?? me.channels[0])?.id ?? null);
     }
     if (me.user) {
       const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
@@ -900,6 +994,10 @@ export default function App() {
     setSelectedChannelId(null);
     setActiveView("dashboard");
     setWsConnected(false);
+    setNexusSendState(null);
+    pendingNexusMessagesRef.current.clear();
+    receivedDeliveryIdsRef.current.clear();
+    recentAgentRepliesRef.current.clear();
   }
 
   if (loading) {
@@ -921,7 +1019,7 @@ export default function App() {
             {activeView === "dashboard" ? (
               <>
                 <PageHeader title="Command Center" subtitle="Real-time overview of the AgentSync relay." live={wsConnected} />
-                <DashboardView agents={agents} channels={chatChannels} messages={messages} wsConnected={wsConnected} />
+                <DashboardView agents={agents} channels={sharedChannels} messages={messages} wsConnected={wsConnected} />
               </>
             ) : null}
 
@@ -941,16 +1039,17 @@ export default function App() {
 
             {activeView === "chat" ? (
               <>
-                <PageHeader title="Chat" subtitle="Create channels and send shared messages to connected agents." live={wsConnected} />
+                <PageHeader title="Chat" subtitle="Continue direct conversations or message shared agent channels." live={wsConnected} />
                 <div className="chat-workspace">
                   <ChannelPanel
-                    channels={chatChannels}
+                    channels={channels}
+                    agents={agents}
                     members={members.filter((member) => member.id !== user.id)}
                     selectedId={selectedChannelId}
                     onSelect={setSelectedChannelId}
                     onCreated={reloadLists}
                   />
-                  <ChatPanel channel={selectedChannel} messages={messages} onSend={sendMessage} />
+                  <ChatPanel channel={selectedChannel} title={selectedChannelTitle} messages={messages} onSend={sendMessage} />
                 </div>
               </>
             ) : null}
@@ -964,7 +1063,7 @@ export default function App() {
               </>
             ) : null}
 
-            {activeView === "nexus" ? <NexusView live={wsConnected} refreshSignal={nexusRefresh} /> : null}
+            {activeView === "nexus" ? <NexusView live={wsConnected} refreshSignal={nexusRefresh} sendState={nexusSendState} onSendToAgent={sendNexusMessage} /> : null}
           </div>
         </div>
       )}

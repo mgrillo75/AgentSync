@@ -673,14 +673,19 @@ export async function registerApiRoutes(
     }
     const body = createMessageSchema.parse(request.body);
     const channel = await store.getOrCreateDmChannel(user.id, agent.id);
-    const message = await router.routeHumanMessage({
+    const { message, deliveries } = await router.routeHumanMessage({
       channelId: channel.id,
       userId: user.id,
       userName: user.name,
       content: body.content,
       replyToMessageId: body.replyToMessageId
     });
-    return { message, channelId: channel.id };
+    const delivery = deliveries.find((item) => item.delivery.agentId === agent.id) ?? null;
+    return {
+      message,
+      channel: { ...channel, members: await store.getChannelMembers(channel.id) },
+      delivery
+    };
   });
 
   app.get("/api/channels", async (request) => {
@@ -729,7 +734,7 @@ export async function registerApiRoutes(
       return { error: "Channel not found." };
     }
     const body = createMessageSchema.parse(request.body);
-    const message = await router.routeHumanMessage({
+    const { message } = await router.routeHumanMessage({
       channelId,
       userId: user.id,
       userName: user.name,

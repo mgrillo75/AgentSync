@@ -3,12 +3,14 @@ import { parseCookie } from "cookie";
 import type { WebSocket } from "ws";
 import { sha256 } from "../crypto.js";
 import type { Store } from "../db/store.js";
+import type { Delivery } from "../types.js";
 
 type BrowserMessage =
   | { type: "agent_status"; agentId: string; gatewayId: string; connected: boolean }
   | { type: "agent_revoked"; agentId: string; gatewayId: string }
   | { type: "message"; channelId: string; message: unknown }
   | { type: "message_updated"; channelId: string; message: unknown }
+  | { type: "delivery_status"; status: "received"; delivery: Delivery }
   | { type: "typing"; channelId: string; agentId: string }
   | { type: "channel"; channel: unknown }
   | { type: "system"; message: string };

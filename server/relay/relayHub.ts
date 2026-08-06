@@ -219,7 +219,16 @@ export class RelayHub implements AgentDelivery {
         await this.handleOutbound(connection, String(frame.requestId ?? ""), frame.action ?? {});
         break;
       case "inbound_ack":
-        if (frame.bufferId) await this.store.markDeliveryAcked(String(frame.bufferId));
+        if (frame.bufferId) {
+          const delivery = await this.store.markDeliveryAcked(String(frame.bufferId), connection.agent.id);
+          if (delivery) {
+            this.browserHub.sendToUser(connection.agent.ownerUserId, {
+              type: "delivery_status",
+              status: "received",
+              delivery
+            });
+          }
+        }
         break;
       case "going_idle":
         sendFrame(connection.ws, { type: "going_idle_ack" });

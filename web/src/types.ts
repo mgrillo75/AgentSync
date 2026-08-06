@@ -89,6 +89,30 @@ export type Message = {
   editedAt: string | null;
 };
 
+export type Delivery = {
+  id: string;
+  agentId: string;
+  channelId: string;
+  messageId: string;
+  deliveredAt: string | null;
+  ackedAt: string | null;
+  createdAt: string;
+};
+
+export type DeliveryAttempt = {
+  delivery: Delivery;
+  status: "queued" | "sent";
+};
+
+export type NexusSendState = {
+  agentId: string;
+  agentName: string;
+  messageId: string | null;
+  channelId: string | null;
+  deliveryId: string | null;
+  status: "sending" | "queued" | "sent" | "received";
+};
+
 export type Config = {
   relayUrl: string;
   baseUrl: string;

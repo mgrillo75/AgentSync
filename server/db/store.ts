@@ -129,8 +129,8 @@ export interface Store {
     event: RelayInboundEvent;
   }): Promise<Delivery>;
   listPendingDeliveries(agentId: string, limit: number): Promise<Delivery[]>;
-  markDeliveryDelivered(deliveryId: string): Promise<void>;
-  markDeliveryAcked(deliveryId: string): Promise<void>;
+  markDeliveryDelivered(deliveryId: string): Promise<Delivery | null>;
+  markDeliveryAcked(deliveryId: string, agentId: string): Promise<Delivery | null>;
 }
 
 const resetPasswordAuthSchema = `
@@ -1077,16 +1077,20 @@ export class PgStore implements Store {
     return result.rows.map(mapDelivery);
   }
 
-  async markDeliveryDelivered(deliveryId: string): Promise<void> {
-    await this.pool.query("update delivery_queue set delivered_at = coalesce(delivered_at, now()) where id = $1", [
-      deliveryId
-    ]);
+  async markDeliveryDelivered(deliveryId: string): Promise<Delivery | null> {
+    const result = await this.pool.query(
+      "update delivery_queue set delivered_at = coalesce(delivered_at, now()) where id = $1 returning *",
+      [deliveryId]
+    );
+    return result.rows[0] ? mapDelivery(result.rows[0]) : null;
   }
 
-  async markDeliveryAcked(deliveryId: string): Promise<void> {
-    await this.pool.query("update delivery_queue set delivered_at = coalesce(delivered_at, now()), acked_at = now() where id = $1", [
-      deliveryId
-    ]);
+  async markDeliveryAcked(deliveryId: string, agentId: string): Promise<Delivery | null> {
+    const result = await this.pool.query(
+      "update delivery_queue set delivered_at = coalesce(delivered_at, now()), acked_at = now() where id = $1 and agent_id = $2 returning *",
+      [deliveryId, agentId]
+    );
+    return result.rows[0] ? mapDelivery(result.rows[0]) : null;
   }
 }
 
@@ -1596,16 +1600,18 @@ export class MemoryStore implements Store {
       .slice(0, limit);
   }
 
-  async markDeliveryDelivered(deliveryId: string): Promise<void> {
+  async markDeliveryDelivered(deliveryId: string): Promise<Delivery | null> {
     const delivery = this.deliveries.get(deliveryId);
     if (delivery && !delivery.deliveredAt) delivery.deliveredAt = new Date().toISOString();
+    return delivery ?? null;
   }
 
-  async markDeliveryAcked(deliveryId: string): Promise<void> {
+  async markDeliveryAcked(deliveryId: string, agentId: string): Promise<Delivery | null> {
     const delivery = this.deliveries.get(deliveryId);
-    if (!delivery) return;
+    if (!delivery || delivery.agentId !== agentId) return null;
     delivery.deliveredAt ??= new Date().toISOString();
     delivery.ackedAt = new Date().toISOString();
+    return delivery;
   }
 }
 
