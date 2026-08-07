@@ -1,4 +1,4 @@
-import type { AccessKey, Agent, Channel, Config, DirectSendResult, Message, NexusGraph, ProviderKey, User } from "../types";
+import type { AccessKey, Agent, Channel, Config, DirectSendResult, Message, NexusGraph, ProviderKey, User, WaoInstance } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -21,6 +21,14 @@ export const api = {
     request<{ user: User }>("/api/access", { method: "POST", body: JSON.stringify({ token }) }),
   logout: () => request<{ ok: true }>("/api/logout", { method: "POST" }),
   listMembers: () => request<{ members: User[] }>("/api/members"),
+  listWaoInstances: () => request<{ instances: WaoInstance[] }>("/api/wao-instances"),
+  getWaoInstance: (instanceId: string) =>
+    request<{ instance: WaoInstance }>(`/api/wao-instances/${instanceId}`),
+  createWaoInstance: (name: string) =>
+    request<{ instance: WaoInstance }>("/api/wao-instances", {
+      method: "POST",
+      body: JSON.stringify({ name })
+    }),
   listAccessKeys: () => request<{ accessKeys: AccessKey[] }>("/api/access-keys"),
   createAccessKey: (name: string) =>
     request<{ user: User; accessKey: AccessKey; token: string }>("/api/access-keys", {

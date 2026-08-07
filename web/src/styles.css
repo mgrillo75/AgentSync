@@ -500,6 +500,14 @@ small {
   gap: 1rem;
 }
 
+.dashboard-grid.admin {
+  grid-template-columns: minmax(210px, 0.7fr) minmax(280px, 0.95fr) minmax(320px, 1.15fr);
+}
+
+.dashboard-grid.admin .consortium-panel .agent-tile-grid {
+  grid-template-columns: 1fr;
+}
+
 .panel {
   padding: 1rem;
 }
@@ -755,6 +763,112 @@ small {
 .compact-list article.revoked,
 .agent-tile.revoked {
   opacity: 0.55;
+}
+
+.wao-instance-list,
+.wao-instance-grid {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.wao-instance-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  margin-top: 1rem;
+}
+
+.wao-instance-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.8rem;
+  background: var(--card-soft);
+  color: var(--text);
+  text-align: left;
+}
+
+.wao-instance-card:hover {
+  border-color: rgba(84, 198, 216, 0.45);
+  background: var(--teal-soft);
+}
+
+.wao-instance-card > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.wao-instance-card strong,
+.wao-instance-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wao-instance-card small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.wao-instance-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.wao-instance-form label {
+  display: grid;
+  gap: 0.38rem;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.back-button {
+  width: max-content;
+}
+
+.wao-instance-detail {
+  max-width: 820px;
+}
+
+.instance-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.instance-meta > div,
+.instance-next-step {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem;
+  background: var(--card-soft);
+}
+
+.instance-meta dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.instance-meta dd {
+  margin: 0.35rem 0 0;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.instance-next-step p {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .agent-label-summary {
@@ -1437,6 +1551,14 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .dashboard-grid.admin {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-grid.admin > .panel:last-child {
+    grid-column: auto;
+  }
+
   .chat-panel {
     min-height: 65vh;
   }
@@ -1460,6 +1582,11 @@ button:disabled {
   }
 
   .stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wao-instance-form,
+  .instance-meta {
     grid-template-columns: 1fr;
   }
 }

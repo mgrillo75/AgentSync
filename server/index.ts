@@ -72,7 +72,8 @@ if (founderKeys.length === 0 && (await store.listUsers()).length === 0) {
     name: "Founder",
     tokenHash: sha256(token),
     tokenPreview: accessKeyPreview(token),
-    label: "Founder"
+    label: "Founder",
+    platformRole: "platform_admin"
   });
   app.log.warn({ accessKey: token }, "Created Founder access key. It is shown once; copy it now.");
 }

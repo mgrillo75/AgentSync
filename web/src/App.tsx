@@ -4,16 +4,17 @@ import { isCorrelatedNexusReply, type PendingNexusMessage } from "./lib/nexusRep
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
 import { NexusView } from "./components/nexus/NexusView";
-import type { AccessKey, Agent, AgentSystemType, BrowserEvent, Channel, Config, DeliveryStatus, Message, NexusSendState, ProviderKey, User } from "./types";
+import type { AccessKey, Agent, AgentSystemType, BrowserEvent, Channel, Config, DeliveryStatus, Message, NexusSendState, ProviderKey, User, WaoInstance } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
-type AppView = "dashboard" | "agents" | "relays" | "providers" | "nexus" | "access" | "chat";
+type AppView = "dashboard" | "wao-instances" | "agents" | "relays" | "providers" | "nexus" | "access" | "chat";
 
-const navItems: Array<{ id: AppView; label: string; icon: string }> = [
+const navItems: Array<{ id: AppView; label: string; icon: string; adminOnly?: boolean }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
+  { id: "wao-instances", label: "WAO Instances", icon: "WI", adminOnly: true },
   { id: "agents", label: "Agents", icon: "AG" },
   { id: "access", label: "Access", icon: "AK" },
   { id: "chat", label: "Chat", icon: "CH" },
@@ -696,7 +697,7 @@ function AppSidebar({
     <aside className="app-sidebar">
       <LogoLockup compact />
       <nav className="nav-list" aria-label="Primary">
-        {navItems.map((item) => (
+        {navItems.filter((item) => !item.adminOnly || user.platformRole === "platform_admin").map((item) => (
           <button key={item.id} className={activeView === item.id ? "nav-item active" : "nav-item"} onClick={() => onChange(item.id)}>
             <span>{item.icon}</span>
             {item.label}
@@ -720,16 +721,134 @@ function AppSidebar({
   );
 }
 
+function formatShortDate(value: string) {
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function WaoInstanceCard({ instance, onOpen }: { instance: WaoInstance; onOpen: (instanceId: string) => void }) {
+  return (
+    <button className="wao-instance-card" type="button" onClick={() => onOpen(instance.id)}>
+      <span>
+        <strong>{instance.name}</strong>
+        <small>Created {formatShortDate(instance.createdAt)}</small>
+      </span>
+      <span className="badge success">Active</span>
+    </button>
+  );
+}
+
+function WaoInstancesView({
+  instances,
+  members,
+  selectedId,
+  onSelect,
+  onCreated
+}: {
+  instances: WaoInstance[];
+  members: User[];
+  selectedId: string | null;
+  onSelect: (instanceId: string | null) => void;
+  onCreated: (instance: WaoInstance) => void;
+}) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const selected = instances.find((instance) => instance.id === selectedId) ?? null;
+
+  async function createInstance(event: FormEvent) {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName || saving) return;
+    setError("");
+    setSaving(true);
+    try {
+      const result = await api.createWaoInstance(trimmedName);
+      onCreated(result.instance);
+      setName("");
+      setShowCreate(false);
+      onSelect(result.instance.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the WAO instance.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (selected) {
+    const creatorName = members.find((member) => member.id === selected.createdBy)?.name ?? "Platform administrator";
+    return (
+      <div className="view-stack">
+        <button className="secondary back-button" type="button" onClick={() => onSelect(null)}>Back to WAO Instances</button>
+        <section className="panel wao-instance-detail">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">WAO Instance</p>
+              <h2>{selected.name}</h2>
+            </div>
+            <span className="badge success">Active</span>
+          </div>
+          <dl className="instance-meta">
+            <div><dt>Created by</dt><dd>{creatorName}</dd></div>
+            <div><dt>Created</dt><dd>{formatShortDate(selected.createdAt)}</dd></div>
+            <div><dt>Status</dt><dd>Active</dd></div>
+          </dl>
+          <div className="instance-next-step">
+            <strong>Instance shell ready</strong>
+            <p>Agents, channels, Work, and other operational modules will be attached to this instance in later iterations.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="view-stack">
+      <section className="panel wao-instance-manager">
+        <div className="panel-header">
+          <div>
+            <p className="eyebrow">Platform Administration</p>
+            <h2>Active WAO Instances</h2>
+          </div>
+          <button type="button" onClick={() => setShowCreate((current) => !current)}>{showCreate ? "Cancel" : "Create Instance"}</button>
+        </div>
+        {showCreate ? (
+          <form className="wao-instance-form" onSubmit={createInstance}>
+            <label>
+              Client / WAO name
+              <input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus placeholder="Example Client WAO" />
+            </label>
+            <button type="submit" disabled={!name.trim() || saving}>{saving ? "Creating..." : "Create"}</button>
+          </form>
+        ) : null}
+        {error ? <p className="error">{error}</p> : null}
+        {instances.length === 0 ? <p className="muted">No WAO instances have been created yet.</p> : null}
+        <div className="wao-instance-grid">
+          {instances.map((instance) => <WaoInstanceCard key={instance.id} instance={instance} onOpen={onSelect} />)}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function DashboardView({
   agents,
   channels,
   messages,
-  wsConnected
+  wsConnected,
+  user,
+  waoInstances,
+  onOpenWaoInstance,
+  onViewAllWaoInstances
 }: {
   agents: Agent[];
   channels: Channel[];
   messages: Message[];
   wsConnected: boolean;
+  user: User;
+  waoInstances: WaoInstance[];
+  onOpenWaoInstance: (instanceId: string) => void;
+  onViewAllWaoInstances: () => void;
 }) {
   const authorizedAgents = agents.filter((agent) => !agent.revokedAt);
   const activeAgents = authorizedAgents.filter((agent) => agent.connectedAt).length;
@@ -746,8 +865,8 @@ function DashboardView({
         <StatCard label="Members" value={memberCount} accent="purple" icon="MB" />
       </section>
 
-      <section className="dashboard-grid">
-        <div className="panel">
+      <section className={user.platformRole === "platform_admin" ? "dashboard-grid admin" : "dashboard-grid"}>
+        <div className="panel consortium-panel">
           <div className="panel-header">
             <div>
               <p className="eyebrow">Consortium</p>
@@ -766,6 +885,24 @@ function DashboardView({
             ))}
           </div>
         </div>
+
+        {user.platformRole === "platform_admin" ? (
+          <div className="panel wao-dashboard-panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Platform</p>
+                <h2>WAO Instances</h2>
+              </div>
+              <button className="label-edit-button" type="button" onClick={onViewAllWaoInstances}>View all</button>
+            </div>
+            {waoInstances.length === 0 ? <p className="muted">Create the first client WAO instance.</p> : null}
+            <div className="wao-instance-list">
+              {waoInstances.slice(0, 5).map((instance) => (
+                <WaoInstanceCard key={instance.id} instance={instance} onOpen={onOpenWaoInstance} />
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="panel">
           <div className="panel-header">
@@ -799,6 +936,8 @@ export default function App() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<User[]>([]);
   const [accessKeys, setAccessKeys] = useState<AccessKey[]>([]);
+  const [waoInstances, setWaoInstances] = useState<WaoInstance[]>([]);
+  const [selectedWaoInstanceId, setSelectedWaoInstanceId] = useState<string | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -883,12 +1022,18 @@ export default function App() {
     setAgents(me.agents);
     setChannels(me.channels);
     if (me.user) {
-      const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
+      const [memberResult, accessKeyResult, instanceResult] = await Promise.all([
+        api.listMembers(),
+        api.listAccessKeys(),
+        me.user.platformRole === "platform_admin" ? api.listWaoInstances() : Promise.resolve({ instances: [] })
+      ]);
       setMembers(memberResult.members);
       setAccessKeys(accessKeyResult.accessKeys);
+      setWaoInstances(instanceResult.instances);
     } else {
       setMembers([]);
       setAccessKeys([]);
+      setWaoInstances([]);
     }
     const firstChannel = me.channels.find((channel) => channel.kind !== "dm") ?? me.channels[0];
     if (!selectedChannelId || !me.channels.some((channel) => channel.id === selectedChannelId)) {
@@ -1027,13 +1172,28 @@ export default function App() {
       setSelectedChannelId((me.channels.find((channel) => channel.kind !== "dm") ?? me.channels[0])?.id ?? null);
     }
     if (me.user) {
-      const [memberResult, accessKeyResult] = await Promise.all([api.listMembers(), api.listAccessKeys()]);
+      const [memberResult, accessKeyResult, instanceResult] = await Promise.all([
+        api.listMembers(),
+        api.listAccessKeys(),
+        me.user.platformRole === "platform_admin" ? api.listWaoInstances() : Promise.resolve({ instances: [] })
+      ]);
       setMembers(memberResult.members);
       setAccessKeys(accessKeyResult.accessKeys);
+      setWaoInstances(instanceResult.instances);
     } else {
       setMembers([]);
       setAccessKeys([]);
+      setWaoInstances([]);
     }
+  }
+
+  function openWaoInstance(instanceId: string) {
+    setSelectedWaoInstanceId(instanceId);
+    setActiveView("wao-instances");
+  }
+
+  function addWaoInstance(instance: WaoInstance) {
+    setWaoInstances((current) => [instance, ...current.filter((item) => item.id !== instance.id)]);
   }
 
   async function sendMessage(content: string) {
@@ -1048,6 +1208,8 @@ export default function App() {
     setChannels([]);
     setMembers([]);
     setAccessKeys([]);
+    setWaoInstances([]);
+    setSelectedWaoInstanceId(null);
     setMessages([]);
     setSelectedChannelId(null);
     setActiveView("dashboard");
@@ -1072,12 +1234,46 @@ export default function App() {
         <AuthPanel onAuth={refresh} />
       ) : (
         <div className="dashboard-shell">
-          <AppSidebar activeView={activeView} onChange={setActiveView} user={user} wsConnected={wsConnected} onLogout={() => void logout()} />
+          <AppSidebar
+            activeView={activeView}
+            onChange={(view) => {
+              if (view === "wao-instances") setSelectedWaoInstanceId(null);
+              setActiveView(view);
+            }}
+            user={user}
+            wsConnected={wsConnected}
+            onLogout={() => void logout()}
+          />
           <div className="main-workspace">
             {activeView === "dashboard" ? (
               <>
                 <PageHeader title="Command Center" subtitle="Real-time overview of the AgentSync relay." live={wsConnected} />
-                <DashboardView agents={agents} channels={sharedChannels} messages={messages} wsConnected={wsConnected} />
+                <DashboardView
+                  agents={agents}
+                  channels={sharedChannels}
+                  messages={messages}
+                  wsConnected={wsConnected}
+                  user={user}
+                  waoInstances={waoInstances}
+                  onOpenWaoInstance={openWaoInstance}
+                  onViewAllWaoInstances={() => {
+                    setSelectedWaoInstanceId(null);
+                    setActiveView("wao-instances");
+                  }}
+                />
+              </>
+            ) : null}
+
+            {activeView === "wao-instances" && user.platformRole === "platform_admin" ? (
+              <>
+                <PageHeader title="WAO Instances" subtitle="Create and open client WAO instance shells." live={wsConnected} />
+                <WaoInstancesView
+                  instances={waoInstances}
+                  members={members}
+                  selectedId={selectedWaoInstanceId}
+                  onSelect={setSelectedWaoInstanceId}
+                  onCreated={addWaoInstance}
+                />
               </>
             ) : null}
 

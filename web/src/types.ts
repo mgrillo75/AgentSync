@@ -1,7 +1,21 @@
+export type PlatformRole = "platform_admin" | "member";
+
 export type User = {
   id: string;
   name: string;
+  platformRole: PlatformRole;
   createdAt: string;
+};
+
+export type WaoInstanceStatus = "active";
+
+export type WaoInstance = {
+  id: string;
+  name: string;
+  status: WaoInstanceStatus;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AccessKey = {

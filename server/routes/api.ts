@@ -114,6 +114,20 @@ const createMessageSchema = z.object({
   replyToMessageId: z.string().optional().nullable()
 });
 
+const createWaoInstanceSchema = z.object({
+  name: z.string().trim().min(1).max(120)
+});
+
+async function requirePlatformAdmin(store: Store, request: FastifyRequest) {
+  const user = await requireUser(store, request);
+  if (user.platformRole !== "platform_admin") {
+    const error = new Error("Platform administrator access is required.") as Error & { statusCode: number };
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
 async function userCanAccessChannel(store: Store, userId: string, channelId: string): Promise<boolean> {
   const channels = await store.listChannelsForUser(userId);
   return channels.some((channel) => channel.id === channelId);
@@ -301,6 +315,28 @@ export async function registerApiRoutes(
   app.get("/api/members", async (request) => {
     await requireUser(store, request);
     return { members: await store.listUsers() };
+  });
+
+  app.get("/api/wao-instances", async (request) => {
+    await requirePlatformAdmin(store, request);
+    return { instances: await store.listWaoInstances() };
+  });
+
+  app.post("/api/wao-instances", async (request) => {
+    const user = await requirePlatformAdmin(store, request);
+    const body = createWaoInstanceSchema.parse(request.body);
+    return { instance: await store.createWaoInstance({ name: body.name, createdBy: user.id }) };
+  });
+
+  app.get("/api/wao-instances/:instanceId", async (request, reply) => {
+    await requirePlatformAdmin(store, request);
+    const { instanceId } = request.params as { instanceId: string };
+    const instance = await store.getWaoInstanceById(instanceId);
+    if (!instance) {
+      reply.code(404);
+      return { error: "WAO instance not found." };
+    }
+    return { instance };
   });
 
   app.get("/api/access-keys", async (request) => {

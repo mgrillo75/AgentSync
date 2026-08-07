@@ -256,9 +256,36 @@ const caMember = await enterAccessKey(caToken);
 const txMember = await enterAccessKey(txToken);
 const caCookie = caMember.cookie;
 const txCookie = txMember.cookie;
+assert(founder.user.platformRole === "platform_admin", "environment founder was not marked as platform administrator");
+assert(caMember.user.platformRole === "member", "created access-key user was not marked as a member");
+
+const waoName = `E2E Client WAO ${unique}`;
+const { body: createdWaoBody } = await json("/api/wao-instances", {
+  method: "POST",
+  headers: { Cookie: founder.cookie },
+  body: JSON.stringify({ name: waoName })
+});
+assert(createdWaoBody.instance.name === waoName, "WAO instance creation returned the wrong name");
+assert(createdWaoBody.instance.status === "active", "WAO instance was not created active");
+assert(createdWaoBody.instance.createdBy === founder.user.id, "WAO instance creator mismatch");
+
+const { body: waoListBody } = await json("/api/wao-instances", { headers: { Cookie: founder.cookie } });
+assert(waoListBody.instances.some((instance) => instance.id === createdWaoBody.instance.id), "created WAO instance was not listed");
+const { body: waoDetailBody } = await json(`/api/wao-instances/${createdWaoBody.instance.id}`, {
+  headers: { Cookie: founder.cookie }
+});
+assert(waoDetailBody.instance.id === createdWaoBody.instance.id, "WAO instance detail mismatch");
+
+const missingWaoResponse = await fetch(`${baseUrl}/api/wao-instances/wao_missing`, {
+  headers: { Cookie: founder.cookie }
+});
+assert(missingWaoResponse.status === 404, `missing WAO instance returned ${missingWaoResponse.status}, expected 404`);
+
+const deniedWaoResponse = await fetch(`${baseUrl}/api/wao-instances`, { headers: { Cookie: caCookie } });
+assert(deniedWaoResponse.status === 403, `member WAO instance access returned ${deniedWaoResponse.status}, expected 403`);
 const caAuthorization = await createAuthorization(caCookie);
 const txEnroll = await enroll(await createEnrollment(txCookie), `gw-tx-${unique}`);
-console.log("[e2e] identities ready");
+console.log("[e2e] identities and WAO instance authorization ready");
 
 const { body: labelBody } = await json(`/api/agents/${caAuthorization.agent.id}`, {
   method: "PATCH",

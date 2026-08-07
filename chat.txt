@@ -1,0 +1,28 @@
+analyze the attached but only tell me when you are done and ready to discuss, dont give me any feedback yet..
+Okay. So um, taking another step back. Uh, I think that what I wanna. Okay. So, um. There is going to basically be a WOW instance for each client. We may have We're going to have multiple clients accessing this our platform. So um Basically, we need to be thinking about that. So like there's gonna be a WOW instance for a client one and a WOW instance for client two, etc. And the main thing that's important is that uh like Greg and I are going to be like human in the loop monitoring guides for the for the agents And um, okay
+
+Let me think how to model that cleanly. Yeah, that's actually important. If each client gets its own WAO instance, then WAO is the tenant boundary. Humans, agents, conversations, work, memory, wisdom, all of that hangs off of a WAO instance. Greg and you are operators or facilitators, not just normal users. I'd model everyone as participants with roles to avoid hard-coding special cases, and I'd actually start the build sequence with WAO instance first, then work inside it.
+
+analyze and let me know when you are ready to discuss dont give me feedback yet
+
+Done. I've analyzed the updated diagram and I'm ready to discuss it.
+
+Okay, I'm going to ask Greg, cause he's the brain child behind this But in your analysis
+
+Mm-hmm.
+
+, does it seem like the WOW is a uh there should just be one WOW because it's like a framework that's used to build agents? Or do you think there should be a WOW instance for each client
+
+Hmm. Based on what you've described, I'd go with one framework, many instances. So each client gets its own WAO with strict isolation. Then the Work layer sits inside each instance, and then the platform can evolve outside of those in more general, non-client specific ways.
+
+S- so um do you see Uh, okay, there's these operating modules of a WOW. There's a dashboard, a work feed, chat, arena, agents, wisdom vault wisdom board governance constitution and build So that makes up a WOW is it um the case that all of those are going to be instantiated for each client or are there some that are only going to be instantiated once or what
+
+Mm-hmm. Hmm I think it depends on the module. I would split them. Operational things such as dashboard, work, chat, arena, agents, and wisdom, those should all be per-client instances. The platform services are implemented once while, uh, o- the constitution is more tricky. I would treat it as something that is versioned at the platform level but inherited and extended per client.
+
+Can you repeat that last part exactly how you said it
+
+Sure. I said, treat the constitution as something that's versioned at the platform level, but inherited and extended per client.
+
+Can you type that out in a message
+
+I can say it again more slowly. Treat the constitution as something that is versioned at the platform level,

@@ -11,7 +11,8 @@ import {
   type Message,
   type ProviderKey,
   type RelayInboundEvent,
-  type User
+  type User,
+  type WaoInstance
 } from "../types.js";
 import { randomId } from "../crypto.js";
 
@@ -25,6 +26,7 @@ export interface Store {
     tokenHash: string;
     tokenPreview: string;
     label: string;
+    platformRole?: User["platformRole"];
   }): Promise<{ user: User; accessKey: AccessKey }>;
   upsertEnvAccessKey(input: {
     name: string;
@@ -36,6 +38,10 @@ export interface Store {
   listUsers(): Promise<User[]>;
   listAccessKeys(): Promise<AccessKey[]>;
   revokeAccessKey(accessKeyId: string): Promise<AccessKey | null>;
+
+  createWaoInstance(input: { name: string; createdBy: string }): Promise<WaoInstance>;
+  listWaoInstances(): Promise<WaoInstance[]>;
+  getWaoInstanceById(instanceId: string): Promise<WaoInstance | null>;
 
   createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void>;
   getSessionUser(tokenHash: string): Promise<User | null>;
@@ -161,7 +167,17 @@ const schema = `
 create table if not exists users (
   id text primary key,
   name text not null,
+  platform_role text not null default 'member' check (platform_role in ('platform_admin', 'member')),
   created_at timestamptz not null default now()
+);
+
+create table if not exists wao_instances (
+  id text primary key,
+  name text not null,
+  status text not null default 'active' check (status in ('active')),
+  created_by text not null references users(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists access_keys (
@@ -282,6 +298,7 @@ create table if not exists llm_agents (
 
 create index if not exists idx_access_keys_user on access_keys(user_id);
 create index if not exists idx_access_keys_active on access_keys(user_id) where revoked_at is null;
+create index if not exists idx_wao_instances_status_created on wao_instances(status, created_at desc);
 create index if not exists idx_sessions_user on sessions(user_id);
 create index if not exists idx_channels_created_by on channels(created_by);
 create index if not exists idx_channel_members_member on channel_members(member_kind, member_id);
@@ -292,6 +309,7 @@ create index if not exists idx_llm_agents_owner on llm_agents(owner_user_id);
 create index if not exists idx_llm_agents_parent on llm_agents(parent_id);
 
 alter table agents add column if not exists system_label text;
+alter table users add column if not exists platform_role text not null default 'member';
 alter table agents add column if not exists subtitle_alias text;
 alter table agents add column if not exists system_type text;
 alter table agents add column if not exists agent_kind text;
@@ -310,7 +328,19 @@ function mapUser(row: any): User {
   return {
     id: row.id,
     name: row.name,
+    platformRole: row.platform_role ?? "member",
     createdAt: toIso(row.created_at) ?? new Date().toISOString()
+  };
+}
+
+function mapWaoInstance(row: any): WaoInstance {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString(),
+    updatedAt: toIso(row.updated_at) ?? new Date().toISOString()
   };
 }
 
@@ -493,13 +523,15 @@ export class PgStore implements Store {
     tokenHash: string;
     tokenPreview: string;
     label: string;
+    platformRole?: User["platformRole"];
   }): Promise<{ user: User; accessKey: AccessKey }> {
     return this.tx(async (client) => {
       const userId = randomId("usr");
       const keyId = randomId("key");
-      const userResult = await client.query("insert into users (id, name) values ($1, $2) returning *", [
+      const userResult = await client.query("insert into users (id, name, platform_role) values ($1, $2, $3) returning *", [
         userId,
-        input.name
+        input.name,
+        input.platformRole ?? "member"
       ]);
       const keyResult = await client.query(
         `insert into access_keys (id, user_id, token_hash, token_preview, label)
@@ -527,7 +559,10 @@ export class PgStore implements Store {
         [input.tokenHash]
       );
       if (sameHash.rows[0]) {
-        const user = await client.query("select * from users where id = $1", [sameHash.rows[0].user_id]);
+        const user = await client.query(
+          "update users set name = $2, platform_role = 'platform_admin' where id = $1 returning *",
+          [sameHash.rows[0].user_id, input.name]
+        );
         return { user: mapUser(user.rows[0]), accessKey: mapAccessKey(sameHash.rows[0]) };
       }
 
@@ -541,7 +576,7 @@ export class PgStore implements Store {
       );
       if (existingLabel.rows[0]) {
         const row = existingLabel.rows[0];
-        await client.query("update users set name = $2 where id = $1", [row.user_id, input.name]);
+        await client.query("update users set name = $2, platform_role = 'platform_admin' where id = $1", [row.user_id, input.name]);
         const keyResult = await client.query(
           `update access_keys ak
            set token_hash = $2,
@@ -559,7 +594,7 @@ export class PgStore implements Store {
 
       const userId = randomId("usr");
       const keyId = randomId("key");
-      const userResult = await client.query("insert into users (id, name) values ($1, $2) returning *", [
+      const userResult = await client.query("insert into users (id, name, platform_role) values ($1, $2, 'platform_admin') returning *", [
         userId,
         input.name
       ]);
@@ -630,6 +665,26 @@ export class PgStore implements Store {
       await client.query("delete from sessions where user_id = $1", [row.user_id]);
       return mapAccessKey(row);
     });
+  }
+
+  async createWaoInstance(input: { name: string; createdBy: string }): Promise<WaoInstance> {
+    const result = await this.pool.query(
+      `insert into wao_instances (id, name, created_by)
+       values ($1, $2, $3)
+       returning *`,
+      [randomId("wao"), input.name, input.createdBy]
+    );
+    return mapWaoInstance(result.rows[0]);
+  }
+
+  async listWaoInstances(): Promise<WaoInstance[]> {
+    const result = await this.pool.query("select * from wao_instances order by created_at desc, id desc");
+    return result.rows.map(mapWaoInstance);
+  }
+
+  async getWaoInstanceById(instanceId: string): Promise<WaoInstance | null> {
+    const result = await this.pool.query("select * from wao_instances where id = $1", [instanceId]);
+    return result.rows[0] ? mapWaoInstance(result.rows[0]) : null;
   }
 
   async createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
@@ -1109,6 +1164,7 @@ export class PgStore implements Store {
 export class MemoryStore implements Store {
   kind = "memory" as const;
   private users = new Map<string, User>();
+  private waoInstances = new Map<string, WaoInstance>();
   private accessKeys = new Map<string, AccessKey & { tokenHash: string }>();
   private sessions = new Map<string, { userId: string; expiresAt: string }>();
   private enrollTokens = new Map<string, EnrollmentToken>();
@@ -1128,9 +1184,15 @@ export class MemoryStore implements Store {
     tokenHash: string;
     tokenPreview: string;
     label: string;
+    platformRole?: User["platformRole"];
   }): Promise<{ user: User; accessKey: AccessKey }> {
     const id = randomId("usr");
-    const user = { id, name: input.name, createdAt: new Date().toISOString() };
+    const user: User = {
+      id,
+      name: input.name,
+      platformRole: input.platformRole ?? "member",
+      createdAt: new Date().toISOString()
+    };
     const accessKey = {
       id: randomId("key"),
       userId: id,
@@ -1157,6 +1219,8 @@ export class MemoryStore implements Store {
     if (sameHash) {
       const user = await this.getUserById(sameHash.userId);
       if (!user) throw new Error("access key user not found");
+      user.name = input.name;
+      user.platformRole = "platform_admin";
       return { user, accessKey: this.publicAccessKey(sameHash) };
     }
 
@@ -1165,6 +1229,7 @@ export class MemoryStore implements Store {
       const user = this.users.get(existing.userId);
       if (!user) throw new Error("access key user not found");
       user.name = input.name;
+      user.platformRole = "platform_admin";
       existing.userName = input.name;
       existing.tokenHash = input.tokenHash;
       existing.tokenPreview = input.tokenPreview;
@@ -1177,7 +1242,8 @@ export class MemoryStore implements Store {
       name: input.name,
       tokenHash: input.tokenHash,
       tokenPreview: input.tokenPreview,
-      label
+      label,
+      platformRole: "platform_admin"
     });
   }
 
@@ -1213,6 +1279,30 @@ export class MemoryStore implements Store {
       if (session.userId === accessKey.userId) this.sessions.delete(tokenHash);
     }
     return this.publicAccessKey(accessKey);
+  }
+
+  async createWaoInstance(input: { name: string; createdBy: string }): Promise<WaoInstance> {
+    const now = new Date().toISOString();
+    const instance: WaoInstance = {
+      id: randomId("wao"),
+      name: input.name,
+      status: "active",
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.waoInstances.set(instance.id, instance);
+    return instance;
+  }
+
+  async listWaoInstances(): Promise<WaoInstance[]> {
+    return [...this.waoInstances.values()].sort(
+      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id)
+    );
+  }
+
+  async getWaoInstanceById(instanceId: string): Promise<WaoInstance | null> {
+    return this.waoInstances.get(instanceId) ?? null;
   }
 
   private publicAccessKey(accessKey: AccessKey & { tokenHash: string }): AccessKey {
