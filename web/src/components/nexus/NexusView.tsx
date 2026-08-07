@@ -76,7 +76,7 @@ export function NexusView({
       setConversations(new Map(entries));
       setError("");
     }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load Nexus."); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load Comms."); }
   }, []);
 
   useEffect(() => { void reload(); }, [reload]);
@@ -124,7 +124,7 @@ export function NexusView({
   const editAgent = useCallback(async (agent: Agent) => {
     const displayName = window.prompt("Agent display name", agent.displayName);
     if (displayName === null || !displayName.trim()) return;
-    const subtitleAlias = window.prompt("Nexus subtitle (leave blank to show gateway ID)", agent.subtitleAlias ?? "");
+    const subtitleAlias = window.prompt("Comms subtitle (leave blank to show gateway ID)", agent.subtitleAlias ?? "");
     if (subtitleAlias === null) return;
     await api.updateAgent(agent.id, { displayName: displayName.trim(), subtitleAlias: subtitleAlias.trim() || null });
     await reload();
@@ -169,7 +169,7 @@ export function NexusView({
   return (
     <section className="swarm-shell nexus-shell">
       <div className="swarm-toolbar">
-        <div><strong>{graph?.agents.length ?? 0} agents in Nexus</strong><span className={live ? "badge success" : "badge"}>{live ? "Live" : "Idle"}</span></div>
+        <div><strong>{graph?.agents.length ?? 0} agents in Comms</strong><span className={live ? "badge success" : "badge"}>{live ? "Live" : "Idle"}</span></div>
         <div className="swarm-toolbar-actions"><button type="button" className="secondary icon-button" onClick={zoomIn}>+</button><button type="button" className="secondary icon-button" onClick={zoomOut}>-</button><button type="button" className="secondary" onClick={fitCurrentView}>Fit</button></div>
       </div>
       {error ? <p className="error">{error}</p> : null}
