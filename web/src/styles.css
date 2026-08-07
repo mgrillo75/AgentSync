@@ -422,6 +422,10 @@ small {
   gap: 1rem;
 }
 
+.stat-grid.simplified {
+  grid-template-columns: minmax(240px, 448px);
+}
+
 .stat-card,
 .panel {
   border: 1px solid var(--border);
@@ -502,6 +506,10 @@ small {
 
 .dashboard-grid.admin {
   grid-template-columns: minmax(210px, 0.7fr) minmax(280px, 0.95fr) minmax(320px, 1.15fr);
+}
+
+.dashboard-grid.admin.simplified {
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
 }
 
 .dashboard-grid.admin .consortium-panel .agent-tile-grid {
@@ -661,6 +669,10 @@ small {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   gap: 1rem;
+}
+
+.chat-workspace.simplified {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .chat-panel {

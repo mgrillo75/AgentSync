@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 2.10.0">
-  <title>WAO Platform Structure Diagram</title>
+  <title>AgentSync — System Architecture Diagram</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -525,14 +525,14 @@
     <div class="header">
       <div class="header-row">
         <div class="pulse-dot"></div>
-        <h1>WAO Platform Structure</h1>
+        <h1>AgentSync — System Architecture</h1>
       </div>
-      <p class="subtitle">One shared platform, multiple isolated client WAO instances</p>
+      <p class="subtitle">Heroku relay hub pairing two Hermes agents · no port forwarding</p>
     </div>
 
     <!-- Main Diagram -->
     <div class="diagram-container">
-      <svg viewBox="0 0 1320 1120" role="img" aria-label="WAO Platform Structure — One shared platform, multiple isolated client WAO instances (architecture diagram)">
+      <svg viewBox="0 0 1070 488" role="img" aria-label="AgentSync — System Architecture — Heroku relay hub pairing two Hermes agents · no port forwarding (architecture diagram)">
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -556,135 +556,89 @@
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Boundaries (behind everything) -->
-        <rect x="231" y="111" width="968" height="114" rx="12" class="c-region" stroke-width="1"/>
-        <text x="239" y="129" class="t-cloud" font-size="9" font-weight="600">SHARED WAO PLATFORM</text>
+        <rect x="220" y="70" width="660" height="350" rx="12" class="c-region" stroke-width="1"/>
+        <text x="228" y="88" class="t-cloud" font-size="9" font-weight="600">Heroku</text>
 
-        <rect x="231" y="326" width="938" height="239" rx="8" class="c-security-group" stroke-width="1"/>
-        <text x="239" y="344" class="t-security" font-size="9" font-weight="600">WAO CLIENT INSTANCE A</text>
-
-        <rect x="231" y="641" width="938" height="239" rx="8" class="c-security-group" stroke-width="1"/>
-        <text x="239" y="659" class="t-security" font-size="9" font-weight="600">WAO CLIENT INSTANCE B</text>
+        <rect x="220" y="70" width="660" height="270" rx="8" class="c-security-group" stroke-width="1"/>
+        <text x="228" y="88" class="t-security" font-size="9" font-weight="600">web dyno ×1 · Fastify :3000</text>
 
         <!-- Connection paths (before components for correct z-order) -->
-        <path d="M 195 170 L 255 170" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path d="M 425 170 L 485 170" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path d="M 675 170 L 735 170" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path d="M 925 170 L 985 170" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path d="M 580 205 L 580 269.5 Q 580 277.5 572 277.5 L 358 277.5 Q 350 277.5 350 285.5 L 350 350" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path d="M 445 385 L 525 385" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path d="M 640 480 L 640 450 L 640 450 L 640 420" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path d="M 755 385 L 935 385" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path d="M 580 205 L 580 427 Q 580 435 572 435 L 358 435 Q 350 435 350 443 L 350 665" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path d="M 445 700 L 525 700" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path d="M 640 795 L 640 765 L 640 765 L 640 735" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path d="M 755 700 L 935 700" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 180 217 L 207 217 Q 215 217 215 209 L 215 138 Q 215 130 223 130 L 250 130" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path d="M 180 217 L 207 217 Q 215 217 215 225 L 215 282 Q 215 290 223 290 L 250 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 400 130 L 432 130 Q 440 130 440 138 L 440 204 Q 440 212 448 212 L 480 212" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 480 212 L 448 212 Q 440 212 440 220 L 440 282 Q 440 290 432 290 L 400 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 630 212 L 664 212 Q 665 212 665 211 L 665 211 Q 665 210 666 210 L 700 210" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path d="M 775 180 L 775 180 L 555 180 L 555 180" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 890 212 L 871 212 Q 870 212 870 211 L 870 211 Q 870 210 869 210 L 850 210" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path d="M 555 244 L 555 340" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
         <!-- Components -->
-        <rect x="35" y="135" width="160" height="70" rx="6" class="c-mask"/>
-        <rect x="35" y="135" width="160" height="70" rx="6" class="c-external" stroke-width="1.5"/>
-        <text x="115" y="168" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Papa + Greg</text>
-        <text x="115" y="184" class="t-muted" font-size="9" text-anchor="middle">Platform administrators</text>
-        <text x="115" y="197" class="t-external" font-size="7" text-anchor="middle">global</text>
+        <rect x="40" y="185" width="140" height="64" rx="6" class="c-mask"/>
+        <rect x="40" y="185" width="140" height="64" rx="6" class="c-external" stroke-width="1.5"/>
+        <text x="110" y="215" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Founders&#39; Browsers</text>
+        <text x="110" y="231" class="t-muted" font-size="9" text-anchor="middle">React SPA · REST + WS</text>
 
-        <rect x="255" y="135" width="170" height="70" rx="6" class="c-mask"/>
-        <rect x="255" y="135" width="170" height="70" rx="6" class="c-security" stroke-width="1.5"/>
-        <text x="340" y="168" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Global Identity</text>
-        <text x="340" y="184" class="t-muted" font-size="9" text-anchor="middle">Authentication + users</text>
+        <rect x="250" y="100" width="150" height="60" rx="6" class="c-mask"/>
+        <rect x="250" y="100" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
+        <text x="325" y="128" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Fastify REST API</text>
+        <text x="325" y="144" class="t-muted" font-size="9" text-anchor="middle">/api/* · /relay/enroll · SPA</text>
+        <text x="325" y="152" class="t-backend" font-size="7" text-anchor="middle">cookie session</text>
 
-        <rect x="485" y="135" width="190" height="70" rx="6" class="c-mask"/>
-        <rect x="485" y="135" width="190" height="70" rx="6" class="c-backend" stroke-width="1.5"/>
-        <text x="580" y="168" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">WAO Instance Manager</text>
-        <text x="580" y="184" class="t-muted" font-size="9" text-anchor="middle">Provisioning + memberships</text>
+        <rect x="250" y="260" width="150" height="60" rx="6" class="c-mask"/>
+        <rect x="250" y="260" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
+        <text x="325" y="288" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">BrowserHub</text>
+        <text x="325" y="304" class="t-muted" font-size="9" text-anchor="middle">WS /browser push</text>
 
-        <rect x="735" y="135" width="190" height="70" rx="6" class="c-mask"/>
-        <rect x="735" y="135" width="190" height="70" rx="6" class="c-cloud" stroke-width="1.5"/>
-        <text x="830" y="168" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Shared Platform Runtime</text>
-        <text x="830" y="184" class="t-muted" font-size="9" text-anchor="middle">Web app + API + relay</text>
+        <rect x="480" y="180" width="150" height="64" rx="6" class="c-mask"/>
+        <rect x="480" y="180" width="150" height="64" rx="6" class="c-messagebus" stroke-width="1.5"/>
+        <text x="555" y="210" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">MessageRouter</text>
+        <text x="555" y="226" class="t-muted" font-size="9" text-anchor="middle">persist · broadcast · deliver</text>
+        <text x="555" y="236" class="t-messagebus" font-size="7" text-anchor="middle">loop guard ×6</text>
 
-        <rect x="985" y="135" width="190" height="70" rx="6" class="c-mask"/>
-        <rect x="985" y="135" width="190" height="70" rx="6" class="c-database" stroke-width="1.5"/>
-        <text x="1080" y="168" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Shared PostgreSQL</text>
-        <text x="1080" y="184" class="t-muted" font-size="9" text-anchor="middle">Logical isolation by waoId</text>
-        <text x="1080" y="197" class="t-database" font-size="7" text-anchor="middle">tenant scoped</text>
+        <rect x="700" y="180" width="150" height="60" rx="6" class="c-mask"/>
+        <rect x="700" y="180" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
+        <text x="775" y="208" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">RelayHub</text>
+        <text x="775" y="224" class="t-muted" font-size="9" text-anchor="middle">WS /relay · NDJSON</text>
+        <text x="775" y="232" class="t-backend" font-size="7" text-anchor="middle">HMAC bearer</text>
 
-        <rect x="255" y="350" width="190" height="70" rx="6" class="c-mask"/>
-        <rect x="255" y="350" width="190" height="70" rx="6" class="c-security" stroke-width="1.5"/>
-        <text x="350" y="383" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Instance A Membership</text>
-        <text x="350" y="399" class="t-muted" font-size="9" text-anchor="middle">Admin | Operator | Member</text>
-        <text x="350" y="412" class="t-security" font-size="7" text-anchor="middle">explicit access</text>
+        <rect x="890" y="180" width="140" height="64" rx="6" class="c-mask"/>
+        <rect x="890" y="180" width="140" height="64" rx="6" class="c-external" stroke-width="1.5"/>
+        <text x="960" y="210" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Hermes Gateways</text>
+        <text x="960" y="226" class="t-muted" font-size="9" text-anchor="middle">paired agents A ↔ B</text>
+        <text x="960" y="236" class="t-external" font-size="7" text-anchor="middle">no public IP needed</text>
 
-        <rect x="525" y="350" width="230" height="70" rx="6" class="c-mask"/>
-        <rect x="525" y="350" width="230" height="70" rx="6" class="c-frontend" stroke-width="1.5"/>
-        <text x="640" y="383" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Operational Modules</text>
-        <text x="640" y="399" class="t-muted" font-size="9" text-anchor="middle">Dashboard | Nexus | Chat | Agents</text>
-
-        <rect x="525" y="480" width="230" height="65" rx="6" class="c-mask"/>
-        <rect x="525" y="480" width="230" height="65" rx="6" class="c-external" stroke-width="1.5"/>
-        <text x="640" y="510.5" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Hermes Gateways A</text>
-        <text x="640" y="526.5" class="t-muted" font-size="9" text-anchor="middle">Instance-authorized agents</text>
-
-        <rect x="935" y="350" width="210" height="70" rx="6" class="c-mask"/>
-        <rect x="935" y="350" width="210" height="70" rx="6" class="c-database" stroke-width="1.5"/>
-        <text x="1040" y="383" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Tenant Data A</text>
-        <text x="1040" y="399" class="t-muted" font-size="9" text-anchor="middle">waoId=A | isolated rows</text>
-
-        <rect x="255" y="665" width="190" height="70" rx="6" class="c-mask"/>
-        <rect x="255" y="665" width="190" height="70" rx="6" class="c-security" stroke-width="1.5"/>
-        <text x="350" y="698" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Instance B Membership</text>
-        <text x="350" y="714" class="t-muted" font-size="9" text-anchor="middle">Admin | Operator | Member</text>
-        <text x="350" y="727" class="t-security" font-size="7" text-anchor="middle">explicit access</text>
-
-        <rect x="525" y="665" width="230" height="70" rx="6" class="c-mask"/>
-        <rect x="525" y="665" width="230" height="70" rx="6" class="c-frontend" stroke-width="1.5"/>
-        <text x="640" y="698" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Operational Modules</text>
-        <text x="640" y="714" class="t-muted" font-size="9" text-anchor="middle">Dashboard | Nexus | Chat | Agents</text>
-
-        <rect x="525" y="795" width="230" height="65" rx="6" class="c-mask"/>
-        <rect x="525" y="795" width="230" height="65" rx="6" class="c-external" stroke-width="1.5"/>
-        <text x="640" y="825.5" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Hermes Gateways B</text>
-        <text x="640" y="841.5" class="t-muted" font-size="9" text-anchor="middle">Instance-authorized agents</text>
-
-        <rect x="935" y="665" width="210" height="70" rx="6" class="c-mask"/>
-        <rect x="935" y="665" width="210" height="70" rx="6" class="c-database" stroke-width="1.5"/>
-        <text x="1040" y="698" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Tenant Data B</text>
-        <text x="1040" y="714" class="t-muted" font-size="9" text-anchor="middle">waoId=B | isolated rows</text>
+        <rect x="480" y="340" width="150" height="60" rx="6" class="c-mask"/>
+        <rect x="480" y="340" width="150" height="60" rx="6" class="c-database" stroke-width="1.5"/>
+        <text x="555" y="368" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">PostgreSQL</text>
+        <text x="555" y="384" class="t-muted" font-size="9" text-anchor="middle">Heroku Postgres · 10 tables</text>
 
         <!-- Connection labels -->
-        <rect x="203.2" y="150" width="43.6" height="14" rx="3" class="c-mask"/>
-        <text x="225" y="160" class="t-backend" font-size="8" text-anchor="middle">sign in</text>
+        <rect x="186" y="153.5" width="58" height="14" rx="3" class="c-mask"/>
+        <text x="215" y="163.5" class="t-backend" font-size="8" text-anchor="middle">HTTPS REST</text>
+        <rect x="181.2" y="233.5" width="67.6" height="14" rx="3" class="c-mask"/>
+        <text x="215" y="243.5" class="t-muted" font-size="8" text-anchor="middle">WSS /browser</text>
 
-
-        <rect x="902" y="209" width="106" height="14" rx="3" class="c-mask"/>
-        <text x="955" y="219" class="t-muted" font-size="8" text-anchor="middle">tenant-scoped access</text>
-        <rect x="336.4" y="424" width="101.2" height="14" rx="3" class="c-mask"/>
-        <text x="387" y="434" class="t-security" font-size="8" text-anchor="middle">explicit membership</text>
-
-        <rect x="668" y="430" width="34" height="14" rx="3" class="c-mask"/>
-        <text x="685" y="440" class="t-messagebus" font-size="8" text-anchor="middle">relay</text>
-        <rect x="823.2" y="365" width="43.6" height="14" rx="3" class="c-mask"/>
-        <text x="845" y="375" class="t-muted" font-size="8" text-anchor="middle">waoId=A</text>
-        <rect x="336.4" y="739" width="101.2" height="14" rx="3" class="c-mask"/>
-        <text x="387" y="749" class="t-security" font-size="8" text-anchor="middle">explicit membership</text>
-
-        <rect x="668" y="745" width="34" height="14" rx="3" class="c-mask"/>
-        <text x="685" y="755" class="t-messagebus" font-size="8" text-anchor="middle">relay</text>
-        <rect x="823.2" y="680" width="43.6" height="14" rx="3" class="c-mask"/>
-        <text x="845" y="690" class="t-muted" font-size="8" text-anchor="middle">waoId=B</text>
+        <rect x="413.4" y="231" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
+        <text x="440" y="241" class="t-muted" font-size="8" text-anchor="middle">broadcast</text>
+        <rect x="643.2" y="191" width="43.6" height="14" rx="3" class="c-mask"/>
+        <text x="665" y="201" class="t-backend" font-size="8" text-anchor="middle">inbound</text>
+        <rect x="631.2" y="160" width="67.6" height="14" rx="3" class="c-mask"/>
+        <text x="665" y="170" class="t-muted" font-size="8" text-anchor="middle">outbound ops</text>
+        <rect x="855" y="191" width="30" height="14" rx="3" class="c-mask"/>
+        <text x="870" y="201" class="t-backend" font-size="8" text-anchor="middle">WSS</text>
+        <rect x="538" y="248" width="34" height="14" rx="3" class="c-mask"/>
+        <text x="555" y="258" class="t-muted" font-size="8" text-anchor="middle">Store</text>
 
         <!-- Legend -->
-        <text x="40" y="1091" class="t-primary" font-size="9" font-weight="600">Legend</text>
-        <rect x="40" y="1096" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
-        <text x="60" y="1104" class="t-muted" font-size="8">External</text>
-        <rect x="138" y="1096" width="14" height="9" rx="2" class="c-security" stroke-width="1"/>
-        <text x="158" y="1104" class="t-muted" font-size="8">Security</text>
-        <rect x="236" y="1096" width="14" height="9" rx="2" class="c-backend" stroke-width="1"/>
-        <text x="256" y="1104" class="t-muted" font-size="8">Backend</text>
-        <rect x="329" y="1096" width="14" height="9" rx="2" class="c-cloud" stroke-width="1"/>
-        <text x="349" y="1104" class="t-muted" font-size="8">Cloud</text>
-        <rect x="412" y="1096" width="14" height="9" rx="2" class="c-database" stroke-width="1"/>
-        <text x="432" y="1104" class="t-muted" font-size="8">Database</text>
-        <rect x="510" y="1096" width="14" height="9" rx="2" class="c-frontend" stroke-width="1"/>
-        <text x="530" y="1104" class="t-muted" font-size="8">Frontend</text>
+        <text x="40" y="459" class="t-primary" font-size="9" font-weight="600">Legend</text>
+        <rect x="40" y="464" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
+        <text x="60" y="472" class="t-muted" font-size="8">External</text>
+        <rect x="138" y="464" width="14" height="9" rx="2" class="c-backend" stroke-width="1"/>
+        <text x="158" y="472" class="t-muted" font-size="8">Backend</text>
+        <rect x="231" y="464" width="14" height="9" rx="2" class="c-messagebus" stroke-width="1"/>
+        <text x="251" y="472" class="t-muted" font-size="8">Message bus</text>
+        <rect x="344" y="464" width="14" height="9" rx="2" class="c-database" stroke-width="1"/>
+        <text x="364" y="472" class="t-muted" font-size="8">Database</text>
       </svg>
     </div>
 
@@ -693,33 +647,36 @@
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>Shared Once</h3>
+          <h3>Message flow</h3>
         </div>
         <ul>
-          <li>&bull; Authentication, identities, deployment, API, and relay runtime</li>
-          <li>&bull; One PostgreSQL service with tenant-scoped access</li>
+          <li>&bull; Browsers POST via REST; pushes arrive on /browser WS</li>
+          <li>&bull; Router persists, broadcasts, queues per-agent deliveries</li>
+          <li>&bull; Loop guard caps agent-to-agent streaks at 6</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>Isolated Per Client</h3>
+          <h3>Relay protocol</h3>
         </div>
         <ul>
-          <li>&bull; Members, agents, credentials, conversations, and operational data</li>
-          <li>&bull; Papa and Greg enter only through explicit instance membership</li>
+          <li>&bull; Gateways dial out via WSS — no port forwarding</li>
+          <li>&bull; NDJSON frames: hello · inbound · outbound · acks</li>
+          <li>&bull; delivery_queue drains on reconnect · 30s ping keepalive</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-dot amber"></div>
-          <h3>Next Capability</h3>
+          <div class="card-dot rose"></div>
+          <h3>Security &amp; storage</h3>
         </div>
         <ul>
-          <li>&bull; Work, Wisdom, Arena, Governance, and Constitution extensions remain future modules</li>
-          <li>&bull; Work follows after the WAO instance boundary is established</li>
+          <li>&bull; ak_ access keys → sha256 → httpOnly session cookie</li>
+          <li>&bull; Agent secrets + provider keys AES-256-GCM encrypted</li>
+          <li>&bull; PgStore when DATABASE_URL set, in-memory otherwise</li>
         </ul>
       </div>
     </div>

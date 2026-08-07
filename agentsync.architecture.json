@@ -24,10 +24,10 @@
     { "from": "browsers", "to": "browserhub", "label": "WSS /browser" },
     { "from": "fastify", "to": "router" },
     { "from": "router", "to": "browserhub", "label": "broadcast", "fromSide": "left", "toSide": "right" },
-    { "from": "router", "to": "relayhub", "label": "inbound", "variant": "emphasis" },
+    { "from": "router", "to": "relayhub", "label": "inbound", "variant": "emphasis", "fromSide": "right", "toSide": "left", "route": "orthogonal-h" },
     { "from": "relayhub", "to": "router", "label": "outbound ops", "fromSide": "top", "toSide": "top", "route": "orthogonal-v" },
-    { "from": "gateways", "to": "relayhub", "label": "WSS", "variant": "emphasis" },
-    { "from": "router", "to": "db", "label": "Store", "fromSide": "bottom", "toSide": "top" }
+    { "from": "gateways", "to": "relayhub", "label": "WSS", "variant": "emphasis", "fromSide": "left", "toSide": "right", "route": "orthogonal-h" },
+    { "from": "router", "to": "db", "label": "Store", "fromSide": "bottom", "toSide": "top", "labelDy": 24 }
   ],
   "cards": [
     { "dot": "cyan", "title": "Message flow", "items": ["Browsers POST via REST; pushes arrive on /browser WS", "Router persists, broadcasts, queues per-agent deliveries", "Loop guard caps agent-to-agent streaks at 6"] },

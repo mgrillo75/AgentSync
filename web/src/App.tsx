@@ -12,6 +12,11 @@ type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
 type AppView = "dashboard" | "wao-instances" | "agents" | "relays" | "providers" | "nexus" | "access" | "chat";
 
+// Keep the earlier multi-channel experience available in the same codebase while
+// WAO operates with one small, shared client conversation. Turning this off
+// restores the legacy channel picker and dashboard summaries without a repo fork.
+const SIMPLIFIED_COMMUNICATIONS_UI = true;
+
 const navItems: Array<{ id: AppView; label: string; icon: string; adminOnly?: boolean }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
   { id: "wao-instances", label: "WAO Instances", icon: "WI", adminOnly: true },
@@ -579,7 +584,19 @@ function ChannelPanel({
   );
 }
 
-function ChatPanel({ channel, title, messages, onSend }: { channel: Channel | null; title: string; messages: Message[]; onSend: (content: string) => Promise<void> }) {
+function ChatPanel({
+  channel,
+  title,
+  messages,
+  onSend,
+  simplified = false
+}: {
+  channel: Channel | null;
+  title: string;
+  messages: Message[];
+  onSend: (content: string) => Promise<void>;
+  simplified?: boolean;
+}) {
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
 
@@ -598,8 +615,12 @@ function ChatPanel({ channel, title, messages, onSend }: { channel: Channel | nu
   if (!channel) {
     return (
       <section className="panel chat-panel empty">
-        <h2>Select or create a channel</h2>
-        <p className="muted">Messages typed here are delivered to connected agents.</p>
+        <h2>{simplified ? "Core conversation is not ready yet" : "Select or create a channel"}</h2>
+        <p className="muted">
+          {simplified
+            ? "Once the shared client conversation is available, it will appear here automatically."
+            : "Messages typed here are delivered to connected agents."}
+        </p>
       </section>
     );
   }
@@ -608,7 +629,9 @@ function ChatPanel({ channel, title, messages, onSend }: { channel: Channel | nu
     <section className="panel chat-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">{channel.kind === "dm" ? "Direct message" : "Shared chat"}</p>
+          <p className="eyebrow">
+            {simplified ? "Miguel · Greg · Client SME" : channel.kind === "dm" ? "Direct message" : "Shared chat"}
+          </p>
           <h2>{title}</h2>
         </div>
         {channel.agentStreakCount > 6 ? <span className="badge">Loop guard active</span> : null}
@@ -625,7 +648,11 @@ function ChatPanel({ channel, title, messages, onSend }: { channel: Channel | nu
         ))}
       </div>
       <form onSubmit={submit} className="composer">
-        <input value={content} onChange={(event) => setContent(event.target.value)} placeholder={channel.kind === "dm" ? "Reply in this direct message..." : "Send a message to the shared agents..."} />
+        <input
+          value={content}
+          onChange={(event) => setContent(event.target.value)}
+          placeholder={simplified ? "Message the core team..." : channel.kind === "dm" ? "Reply in this direct message..." : "Send a message to the shared agents..."}
+        />
         <button type="submit">Send</button>
       </form>
       {error ? <p className="error">{error}</p> : null}
@@ -858,14 +885,18 @@ function DashboardView({
 
   return (
     <div className="view-stack">
-      <section className="stat-grid">
+      <section className={SIMPLIFIED_COMMUNICATIONS_UI ? "stat-grid simplified" : "stat-grid"}>
         <StatCard label="Active Agents" value={activeAgents} sublabel={`/ ${authorizedAgents.length}`} accent="green" icon="AG" />
-        <StatCard label="Channels" value={channels.length} accent="blue" icon="CH" />
-        <StatCard label="Messages Loaded" value={messages.length} accent="amber" icon="MS" />
-        <StatCard label="Members" value={memberCount} accent="purple" icon="MB" />
+        {!SIMPLIFIED_COMMUNICATIONS_UI ? (
+          <>
+            <StatCard label="Channels" value={channels.length} accent="blue" icon="CH" />
+            <StatCard label="Messages Loaded" value={messages.length} accent="amber" icon="MS" />
+            <StatCard label="Members" value={memberCount} accent="purple" icon="MB" />
+          </>
+        ) : null}
       </section>
 
-      <section className={user.platformRole === "platform_admin" ? "dashboard-grid admin" : "dashboard-grid"}>
+      <section className={`${user.platformRole === "platform_admin" ? "dashboard-grid admin" : "dashboard-grid"}${SIMPLIFIED_COMMUNICATIONS_UI ? " simplified" : ""}`}>
         <div className="panel consortium-panel">
           <div className="panel-header">
             <div>
@@ -904,26 +935,28 @@ function DashboardView({
           </div>
         ) : null}
 
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Workspaces</p>
-              <h2>Channels</h2>
+        {!SIMPLIFIED_COMMUNICATIONS_UI ? (
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Workspaces</p>
+                <h2>Channels</h2>
+              </div>
+            </div>
+            <div className="compact-list">
+              {latestChannels.length === 0 ? <p className="muted">Create your first channel from Chat.</p> : null}
+              {latestChannels.map((channel) => (
+                <article key={channel.id}>
+                  <div>
+                    <strong>{channel.name}</strong>
+                    <small>{channel.members.length} members</small>
+                  </div>
+                  {channel.agentStreakCount > 6 ? <span className="badge warning">Guard</span> : null}
+                </article>
+              ))}
             </div>
           </div>
-          <div className="compact-list">
-            {latestChannels.length === 0 ? <p className="muted">Create your first channel from Chat.</p> : null}
-            {latestChannels.map((channel) => (
-              <article key={channel.id}>
-                <div>
-                  <strong>{channel.name}</strong>
-                  <small>{channel.members.length} members</small>
-                </div>
-                {channel.agentStreakCount > 6 ? <span className="badge warning">Guard</span> : null}
-              </article>
-            ))}
-          </div>
-        </div>
+        ) : null}
       </section>
     </div>
   );
@@ -1153,12 +1186,16 @@ export default function App() {
   }, [selectedChannelId]);
 
   const sharedChannels = useMemo(() => channels.filter((channel) => channel.kind !== "dm"), [channels]);
+  const coreConversation = sharedChannels[0] ?? null;
   const selectedChannel = useMemo(
-    () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
-    [channels, selectedChannelId]
+    () => SIMPLIFIED_COMMUNICATIONS_UI
+      ? coreConversation
+      : channels.find((channel) => channel.id === selectedChannelId) ?? null,
+    [channels, coreConversation, selectedChannelId]
   );
   const selectedChannelTitle = useMemo(() => {
     if (!selectedChannel) return "";
+    if (SIMPLIFIED_COMMUNICATIONS_UI) return "Core Conversation";
     if (selectedChannel.kind !== "dm") return selectedChannel.name;
     return agents.find((agent) => agent.id === selectedChannel.dmAgentId)?.displayName ?? "Direct message";
   }, [agents, selectedChannel]);
@@ -1293,17 +1330,29 @@ export default function App() {
 
             {activeView === "chat" ? (
               <>
-                <PageHeader title="Chat" subtitle="Continue direct conversations or message shared agent channels." live={wsConnected} />
-                <div className="chat-workspace">
-                  <ChannelPanel
-                    channels={channels}
-                    agents={agents}
-                    members={members.filter((member) => member.id !== user.id)}
-                    selectedId={selectedChannelId}
-                    onSelect={setSelectedChannelId}
-                    onCreated={reloadLists}
+                <PageHeader
+                  title="Chat"
+                  subtitle={SIMPLIFIED_COMMUNICATIONS_UI ? "One shared conversation for the core client team." : "Continue direct conversations or message shared agent channels."}
+                  live={wsConnected}
+                />
+                <div className={SIMPLIFIED_COMMUNICATIONS_UI ? "chat-workspace simplified" : "chat-workspace"}>
+                  {!SIMPLIFIED_COMMUNICATIONS_UI ? (
+                    <ChannelPanel
+                      channels={channels}
+                      agents={agents}
+                      members={members.filter((member) => member.id !== user.id)}
+                      selectedId={selectedChannelId}
+                      onSelect={setSelectedChannelId}
+                      onCreated={reloadLists}
+                    />
+                  ) : null}
+                  <ChatPanel
+                    channel={selectedChannel}
+                    title={selectedChannelTitle}
+                    messages={messages}
+                    onSend={sendMessage}
+                    simplified={SIMPLIFIED_COMMUNICATIONS_UI}
                   />
-                  <ChatPanel channel={selectedChannel} title={selectedChannelTitle} messages={messages} onSend={sendMessage} />
                 </div>
               </>
             ) : null}
