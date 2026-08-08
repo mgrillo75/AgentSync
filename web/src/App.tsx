@@ -594,6 +594,47 @@ function WaoInstanceCard({ instance, onOpen }: { instance: WaoInstance; onOpen: 
   );
 }
 
+type WaoFunctionKind = "work" | "wisdom" | "governance";
+
+function WaoFunctionIcon({ kind }: { kind: WaoFunctionKind }) {
+  if (kind === "work") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 7V5.5A1.5 1.5 0 0 1 9.5 4h5A1.5 1.5 0 0 1 16 5.5V7M4 9.5h16v9.25A1.25 1.25 0 0 1 18.75 20H5.25A1.25 1.25 0 0 1 4 18.75V9.5Z" />
+        <path d="M4 13h16M10 13v2h4v-2" />
+      </svg>
+    );
+  }
+
+  if (kind === "wisdom") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8.4 15.4A6.5 6.5 0 1 1 15.6 15.4c-.8.55-1.1 1.15-1.1 2.1h-5c0-.95-.3-1.55-1.1-2.1Z" />
+        <path d="M9.5 20h5M12 1v1.5M4.2 5.2l1.1 1.1M19.8 5.2l-1.1 1.1" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3 19 6v5.5c0 4.4-2.7 7.5-7 9.5-4.3-2-7-5.1-7-9.5V6l7-3Z" />
+      <path d="m8.7 12 2.1 2.1 4.6-4.6" />
+    </svg>
+  );
+}
+
+function WaoFunctionCard({ kind, title, subtitle }: { kind: WaoFunctionKind; title: string; subtitle: string }) {
+  return (
+    <article className={`wao-function-card ${kind}`} aria-label={`${title}: ${subtitle}`}>
+      <span className="wao-function-icon"><WaoFunctionIcon kind={kind} /></span>
+      <span>
+        <strong>{title}</strong>
+        <small>{subtitle}</small>
+      </span>
+    </article>
+  );
+}
+
 function WaoInstancesView({
   instances,
   members,
@@ -638,10 +679,15 @@ function WaoInstancesView({
       <div className="view-stack">
         <button className="secondary back-button" type="button" onClick={() => onSelect(null)}>Back to WAO Instances</button>
         <section className="panel wao-instance-detail">
-          <div className="panel-header">
+          <div className="panel-header wao-instance-header">
             <div>
               <p className="eyebrow">WAO Instance</p>
               <h2>{selected.name}</h2>
+            </div>
+            <div className="wao-function-cards" aria-label="WAO functions">
+              <WaoFunctionCard kind="work" title="Work & Arena" subtitle="Tasks · Bounties" />
+              <WaoFunctionCard kind="wisdom" title="Wisdom" subtitle="Memory · Insights" />
+              <WaoFunctionCard kind="governance" title="Governance" subtitle="Rules · Decisions" />
             </div>
             <span className="badge success">Active</span>
           </div>
