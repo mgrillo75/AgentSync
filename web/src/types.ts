@@ -1,5 +1,17 @@
 export type PlatformRole = "platform_admin" | "member";
 
+export type MemoryServiceState = "healthy" | "degraded" | "offline" | "unconfigured";
+export type MemoryDependencyState = "ok" | "unavailable" | "unknown";
+export type MemoryServiceStatus = {
+  configured: boolean;
+  status: MemoryServiceState;
+  database: MemoryDependencyState;
+  vectorStore: MemoryDependencyState;
+  authenticationConfigured: boolean;
+  serviceUrl: string | null;
+  checkedAt: string;
+};
+
 export type User = {
   id: string;
   name: string;

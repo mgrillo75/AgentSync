@@ -259,6 +259,13 @@ const txCookie = txMember.cookie;
 assert(founder.user.platformRole === "platform_admin", "environment founder was not marked as platform administrator");
 assert(caMember.user.platformRole === "member", "created access-key user was not marked as a member");
 
+const { body: memoryStatus } = await json("/api/memory/status", { headers: { Cookie: founder.cookie } });
+assert(["healthy", "degraded", "offline", "unconfigured"].includes(memoryStatus.status), "memory status was not normalized");
+assert(typeof memoryStatus.checkedAt === "string", "memory status omitted its checked timestamp");
+assert(!JSON.stringify(memoryStatus).includes(process.env.MEMORY_SERVICE_API_KEY || "__missing_key__"), "memory status exposed the service key");
+const deniedMemoryResponse = await fetch(`${baseUrl}/api/memory/status`, { headers: { Cookie: caCookie } });
+assert(deniedMemoryResponse.status === 403, `member memory status access returned ${deniedMemoryResponse.status}, expected 403`);
+
 const waoName = `E2E Client WAO ${unique}`;
 const { body: createdWaoBody } = await json("/api/wao-instances", {
   method: "POST",

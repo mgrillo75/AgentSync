@@ -10,6 +10,7 @@
     "heroku-postbuild": "npm run build",
     "start": "node dist/server/index.js",
     "test:e2e": "node scripts/e2e-relay.mjs",
+    "test:memory": "npm run build && node --test scripts/memory-status.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.web.json"
   },
   "engines": {

@@ -7,6 +7,7 @@ import type { RelayHub } from "../relay/relayHub.js";
 import { getAgentSecret, provisionAgentForOwner } from "../services/agentProvisioning.js";
 import type { BrowserHub } from "../services/browserHub.js";
 import type { MessageRouter } from "../services/messageRouter.js";
+import { getMemoryServiceStatus } from "../services/memoryStatus.js";
 import type { Agent, NexusLink, ProviderKey } from "../types.js";
 
 function publicBaseUrl(request: FastifyRequest): string {
@@ -320,6 +321,11 @@ export async function registerApiRoutes(
   app.get("/api/wao-instances", async (request) => {
     await requirePlatformAdmin(store, request);
     return { instances: await store.listWaoInstances() };
+  });
+
+  app.get("/api/memory/status", async (request) => {
+    await requirePlatformAdmin(store, request);
+    return getMemoryServiceStatus();
   });
 
   app.post("/api/wao-instances", async (request) => {

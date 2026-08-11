@@ -402,6 +402,12 @@ small {
   color: var(--warning);
 }
 
+.badge.danger {
+  border-color: rgba(251, 113, 133, 0.25);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--danger);
+}
+
 .eyebrow {
   margin: 0 0 0.32rem;
   color: var(--teal);
@@ -526,6 +532,64 @@ small {
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.8rem;
+}
+
+.memory-view {
+  max-width: 980px;
+}
+
+.memory-overview-panel {
+  padding: clamp(1rem, 2vw, 1.35rem);
+}
+
+.memory-status-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.25rem 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--card-soft);
+}
+
+.memory-status-hero > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.memory-status-hero strong {
+  font-size: 1.35rem;
+}
+
+.memory-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.memory-detail-card {
+  display: grid;
+  min-width: 0;
+  gap: 0.65rem;
+  align-content: space-between;
+  min-height: 105px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: var(--card-soft);
+}
+
+.memory-detail-card strong {
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+}
+
+.memory-checked-at {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .panel h2 {
@@ -1589,6 +1653,15 @@ button:disabled {
 
   .stat-grid {
     grid-template-columns: 1fr;
+  }
+
+  .memory-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .memory-status-hero {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .wao-instance-form,

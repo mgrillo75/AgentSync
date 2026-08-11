@@ -1,4 +1,4 @@
-import type { AccessKey, Agent, Channel, Config, DirectSendResult, Message, NexusGraph, ProviderKey, User, WaoInstance } from "../types";
+import type { AccessKey, Agent, Channel, Config, DirectSendResult, MemoryServiceStatus, Message, NexusGraph, ProviderKey, User, WaoInstance } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -22,6 +22,7 @@ export const api = {
   logout: () => request<{ ok: true }>("/api/logout", { method: "POST" }),
   listMembers: () => request<{ members: User[] }>("/api/members"),
   listWaoInstances: () => request<{ instances: WaoInstance[] }>("/api/wao-instances"),
+  memoryStatus: () => request<MemoryServiceStatus>("/api/memory/status"),
   getWaoInstance: (instanceId: string) =>
     request<{ instance: WaoInstance }>(`/api/wao-instances/${instanceId}`),
   createWaoInstance: (name: string) =>

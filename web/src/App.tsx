@@ -4,13 +4,14 @@ import { isCorrelatedNexusReply, type PendingNexusMessage } from "./lib/nexusRep
 import { PROVIDERS, providerLabel } from "./lib/providers";
 import { RelaysView } from "./components/relays/RelaysView";
 import { NexusView } from "./components/nexus/NexusView";
+import { MemoryView } from "./components/memory/MemoryView";
 import type { AccessKey, Agent, AgentSystemType, BrowserEvent, Config, DeliveryStatus, Message, NexusSendState, ProviderKey, User, WaoInstance } from "./types";
 import waoBadgeUrl from "./wao-badge.svg";
 import "./styles.css";
 
 type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
-type AppView = "dashboard" | "wao-instances" | "agents" | "relays" | "providers" | "comms" | "access";
+type AppView = "dashboard" | "wao-instances" | "agents" | "relays" | "providers" | "comms" | "memory" | "access";
 
 const navItems: Array<{ id: AppView; label: string; icon: string; adminOnly?: boolean }> = [
   { id: "dashboard", label: "Dashboard", icon: "DB" },
@@ -19,7 +20,8 @@ const navItems: Array<{ id: AppView; label: string; icon: string; adminOnly?: bo
   { id: "access", label: "Access", icon: "AK" },
   { id: "relays", label: "Relays", icon: "RL" },
   { id: "providers", label: "Providers", icon: "PR" },
-  { id: "comms", label: "Comms", icon: "CM" }
+  { id: "comms", label: "Comms", icon: "CM" },
+  { id: "memory", label: "Memory", icon: "MM", adminOnly: true }
 ];
 
 function copy(text: string) {
@@ -1112,6 +1114,13 @@ export default function App() {
             ) : null}
 
             {activeView === "comms" ? <NexusView live={wsConnected} refreshSignal={nexusRefresh} sendState={nexusSendState} onSendToAgent={sendNexusMessage} /> : null}
+
+            {activeView === "memory" && user.platformRole === "platform_admin" ? (
+              <>
+                <PageHeader title="Memory" subtitle="Health and capabilities of the WAO memory service." live={wsConnected} />
+                <MemoryView />
+              </>
+            ) : null}
           </div>
         </div>
       )}

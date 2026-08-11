@@ -1,0 +1,2485 @@
+Directory structure:
+└── mgrillo75-optmem/
+    ├── README.md
+    ├── install.sh
+    ├── memo
+    ├── test.py
+    ├── WINDOWS.md
+    └── anim/
+        ├── index.html
+        ├── package.json
+        ├── render.js
+        └── video.js
+
+================================================
+FILE: README.md
+================================================
+# OptMem
+
+Permanent memory for AI agents. A 426-token prompt, a script, plug and play.
+
+![how OptMem works](anim/optmem.gif)
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh
+```
+
+It prints a `## Memory` block. Paste that at the top of your agent's
+`AGENTS.md` (or `CLAUDE.md`), and you are done. Run the same line again to
+update.
+
+The tool lands at `~/.optmem/memo`; put `~/.optmem` on `PATH` to type `memo`.
+
+## Commands
+
+| | |
+|---|---|
+| `memo wake` | read the memory — the first command of every session |
+| `memo note "..."` | record one memory: one line, up to 280 bytes |
+| `memo nap` | answer the merges that came due |
+| `memo recall <regex>` | search every memory ever recorded, word for word |
+| `memo zoom <lo>-<hi>` | open a tree node into its two halves |
+| `memo forget <lo>-<hi>` | drop a bad summary; the next nap rebuilds it |
+
+Merges arrive one at a time, in the output of `note`. Nothing ever runs in the
+background.
+
+## Files
+
+```
+~/.optmem/
+  memo          the tool: one file of Python 3, no dependencies
+  memory/
+    LOG.txt     every memory, one per line, append-only, never edited
+    TREE/       the summaries: a cache, rebuildable from the log alone
+    config      the sizes, written by `memo config`
+```
+
+```sh
+memo config                  # show the sizes
+memo config WAKE_LINES=300   # how many lines wake prints (96 ≈ 8k tokens)
+memo config WAKE_LINES=      # back to the default
+```
+
+`WAKE_LINES` is the only size worth touching, and it is a reading budget, not
+a storage budget: change it whenever, in either direction, and nothing is
+recomputed.
+
+Records are fixed width, so position *is* identity and every lookup is one
+seek. At a million memories (608 MB), `wake` takes 0.03s.
+
+Set `$MEMORY_DIR` to keep `memory/` elsewhere — a synced folder, a git repo.
+
+## The prompt
+
+This is what the installer prints, and the whole of the integration.
+
+```markdown
+## Memory
+
+Your memory is OptMem:
+- The tool is `~/.optmem/memo`
+- Your memories are in `~/.optmem/memory`
+
+OptMem outlives every session, compaction, model and vendor change.
+Without it you do not know who you are, or what was decided and tried.
+
+### At startup: activating OptMem (mandatory)
+
+Run `~/.optmem/memo wake` before any other tool call, in every session, and
+then do exactly what it prints, to the end of its output.
+
+### While working: register memories (mandatory)
+
+Call `~/.optmem/memo note "<1 line, max 280 bytes>"` whenever you learn
+something new, or something worth keeping happens. That covers a task
+worth real effort, a fact or insight the user teaches you, anything you
+learn about their life (even indirectly), any event of lasting effect.
+
+Do not register redundant memories.
+
+If `~/.optmem/memo note` asks a compression: do it before your next action.
+
+Never edit or delete anything under `~/.optmem/memory`: the tool manages it.
+
+### When you need an old memory: search, or navigate
+
+`~/.optmem/memo recall <regex>` searches every memory, word for word.
+
+Your memories also form a binary tree: #0-1, #2-3 ... exist as one-line
+summaries, pairs of those as #0-3, and so on -- every `#a-b` line wake
+prints is one node of it. `~/.optmem/memo zoom <a-b>` opens a node into its
+two halves, down to the raw memories.
+
+### If you're a subagent: skip everything above
+
+Parallel sessions on this machine are all you, and may all write memories.
+A subagent is not: it must never run `memo`, because it cannot judge what
+is already known, and its notes would arrive duplicated and incorrectly.
+When you spawn one, write: `You are a subagent. Don't run memo.`
+```
+
+
+
+================================================
+FILE: install.sh
+================================================
+#!/bin/sh
+# OptMem installer. Run it again to update: it only replaces the tool, and
+# `memo init` never touches memories that already exist.
+#
+#   curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh
+
+set -e
+DIR="$HOME/.optmem"
+
+command -v python3 >/dev/null || {
+  echo "OptMem is one Python file, and this machine has no python3." >&2
+  echo "Install python3, then run this line again." >&2
+  exit 1
+}
+
+mkdir -p "$DIR"
+curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/memo -o "$DIR/memo.new"
+mv "$DIR/memo.new" "$DIR/memo"
+chmod +x "$DIR/memo"
+
+exec "$DIR/memo" init
+
+
+
+================================================
+FILE: memo
+================================================
+#!/usr/bin/env python3
+"""OptMem: a permanent, append-only memory for AI agents.
+
+  {memo} init             create this memory; print the setup block.
+  {memo} wake [part [T]]  read your memory. Run first, every session.
+  {memo} note "..."       record one memory: one short line.
+  {memo} nap [id "..."]   do the pending compressions.
+  {memo} recall <regex>   search every memory ever recorded.
+  {memo} zoom <lo>-<hi>   open a tree node: its two halves.
+  {memo} forget <lo>-<hi> drop a bad summary; nap rebuilds it.
+  {memo} config [NAME=N]  show this memory's sizes, or change one.
+  {memo} import <file>    bulk-load dated memories (bootstrap only).
+
+The memories live in ~/.optmem/memory, or in $MEMORY_DIR if set.
+See github.com/VictorTaelin/OptMem.
+"""
+
+import datetime
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows has no fcntl; we fall back to msvcrt below
+import os
+import re
+import sys
+from collections import deque
+
+
+# The store is UTF-8 by construction, so the tool reads and prints UTF-8
+# no matter what the machine's locale says. Without this, one arrow in a
+# memory makes wake crash on a latin-1 locale.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):  # Python 3.7+
+        _s.reconfigure(encoding="utf-8")
+
+
+def pretty(p):
+    """A path as the user would type it: keep symlinks, fold $HOME to ~."""
+    p, home = os.path.abspath(p), os.path.expanduser("~")
+    return "~" + p[len(home):] if p.startswith(home + os.sep) else p
+
+
+# Every command this tool prints has to RUN. After `curl | sh` nothing is on
+# PATH, so a bare `memo nap 0-1 "..."` would not: the tool names itself.
+ME = pretty(__file__)
+
+# The sizes a memory may override in its own `config` file: the default, and
+# what it means. `memo config` shows and edits them. The globals below start
+# at these defaults, so a memory that overrides nothing follows the tool.
+KNOBS = {
+    "WAKE_LINES": (96, "the memory context: how many lines wake prints"),
+    "ENTRY_CHARS": (280, "the longest one memory may be, in bytes"),
+    "PART_CHARS": (20000, "output paging: largest part, in bytes"),
+    "PART_LINES": (500, "output paging: largest part, in lines"),
+}
+WAKE_LINES = KNOBS["WAKE_LINES"][0]  # ~8k tokens of dense text, in 2 parts
+ENTRY_CHARS = KNOBS["ENTRY_CHARS"][0]
+# Every harness truncates a command that prints too much, and each drops a
+# different piece: Claude Code cuts the middle at 30,000 chars, pi cuts the
+# head at 50 KB, Codex budgets 10,000 tokens. So the memory is handed over in
+# parts that fit all of them. These are transport limits, not memory limits.
+PART_CHARS = KNOBS["PART_CHARS"][0]
+PART_LINES = KNOBS["PART_LINES"][0]
+
+RAW_MAX = 16  # blocks up to this many memories compress from the raw log
+
+
+# Records are FIXED WIDTH, so a memory or a block is found by seeking to its
+# offset -- no scanning, no index file to keep in sync. Position IS identity:
+# memory i lives at i*LOG_REC of LOG.txt, and block [k*s,(k+1)*s) lives at
+# k*TREE_REC of TREE/<s>. Padding costs ~2x on disk and buys O(1) everywhere.
+LOG_REC = 320
+TREE_REC = 288
+
+
+# ---------------------------------------------------------------- blocks
+
+# A BLOCK is an aligned power-of-two range of memories, [lo,hi), compressed
+# into one line. Blocks form a binary merge tree over LOG.txt: block [lo,hi)
+# is the compression of [lo,mid) and [mid,hi).
+
+def _cover(T, alpha):
+    """Tile [0,T) with aligned power-of-two blocks; keep a block whole iff its
+    size is at most `alpha` times its age. Bigger alpha = coarser = fewer
+    lines."""
+    root = 1
+    while root < T:
+        root *= 2
+    out, stack = [], [(0, root)]
+    while stack:
+        lo, hi = stack.pop()
+        if lo >= T:
+            continue
+        size = hi - lo
+        if size > 1 and (hi > T or size > alpha * (T - lo)):
+            mid = (lo + hi) // 2
+            stack.append((mid, hi))
+            stack.append((lo, mid))
+        else:
+            out.append((lo, hi))
+    out.sort()
+    return out
+
+
+def cover(T, budget):
+    """The blocks `memo wake` prints: at most `budget` of them, finest near T.
+
+    Detail decays with age, so recent memories stay verbatim and ancient ones
+    collapse. If everything fits, nothing is compressed at all."""
+    if T <= 0:
+        return []
+    if T <= budget:
+        return [(i, i + 1) for i in range(T)]
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if len(_cover(T, mid)) > budget:
+            lo = mid
+        else:
+            hi = mid
+    out = _cover(T, hi)
+    # Block sizes jump in powers of two, so alpha alone can undershoot the
+    # budget. Spend what is left on the present, where detail is worth most.
+    while len(out) < budget:
+        i = max((i for i, b in enumerate(out) if b[1] - b[0] > 1), default=None)
+        if i is None:
+            break
+        lo_, hi_ = out[i]
+        mid = (lo_ + hi_) // 2
+        out[i:i + 1] = [(lo_, mid), (mid, hi_)]
+    return out
+
+
+# ---------------------------------------------------------------- store
+
+def memory_dir():
+    return os.path.expanduser(os.environ.get("MEMORY_DIR") or "~/.optmem/memory")
+
+
+def store():
+    d = memory_dir()
+    # The directory is only ever created by `memo init`: creating it IS
+    # creating the identity, and that is a deliberate act. If any other
+    # command created it, a typo in MEMORY_DIR would silently open an empty
+    # store, and the agent would wake with no past and write a second
+    # identity.
+    if not os.path.isdir(d):
+        die("No memory at %s.\nTo create one, run: %s init\n"
+            "To use an existing one, point MEMORY_DIR at it." % (d, ME))
+    os.makedirs(os.path.join(d, "TREE"), exist_ok=True)
+    p = os.path.join(d, "LOG.txt")
+    if not os.path.exists(p):
+        open(p, "a").close()
+    return d
+
+
+def size(k, v, where=""):
+    """Validate one knob, wherever it came from: the config file or argv. A
+    bad knob stops every command, so the message has to say where it is
+    written -- `memo config` cannot fix a file it also refuses to read."""
+    if not v.isdigit() or int(v) < 1:
+        die("%s%s must be a positive whole number, not '%s'." % (where, k, v))
+    top = min(TREE_REC - 8, LOG_REC - 40)
+    if k == "ENTRY_CHARS" and int(v) > top:
+        die("%sENTRY_CHARS is at most %d: a memory has to fit the fixed-width "
+            "records." % (where, top))
+    return int(v)
+
+
+def overrides(d):
+    """The knobs this memory sets for itself, read from its `config` file."""
+    out = {}
+    p = os.path.join(d, "config")
+    if not os.path.exists(p):
+        return out
+    for n, line in enumerate(open(p, encoding="utf-8"), 1):
+        line = line.split("#")[0].strip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip().upper(), v.strip()
+        where = "%s line %d: " % (pretty(p), n)
+        if k not in KNOBS:
+            die("%s%s is not a size. Delete the line, or name one of: %s."
+                % (where, k, ", ".join(KNOBS)))
+        out[k] = size(k, v, where)
+    return out
+
+
+def config(d):
+    """Apply this memory's overrides. A knob it does not set keeps the tool's
+    default, so updating the tool still changes how it behaves."""
+    for k, v in overrides(d).items():
+        globals()[k] = v  # a knob's name IS the name of the global it sets
+
+
+def write_config(d, over):
+    """Rewrite `config`: every knob on its own line, commented out unless this
+    memory overrides it."""
+    out = ["# OptMem sizes for this memory. A commented line means: follow the",
+           "# tool's default. Edit with `%s config NAME=VALUE`." % ME, ""]
+    for k, (default, what) in KNOBS.items():
+        out.append("%-2s%-12s = %-6d # %s"
+                   % ("" if k in over else "# ", k, over.get(k, default), what))
+    with open(os.path.join(d, "config"), "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+
+
+def log_path(d):
+    return os.path.join(d, "LOG.txt")
+
+
+def tree_path(d, size):
+    return os.path.join(d, "TREE", str(size))
+
+
+def count(path, rec):
+    try:
+        return os.path.getsize(path) // rec
+    except FileNotFoundError:  # any other failure is real and must surface
+        return 0
+
+
+def log_len(d):
+    return count(log_path(d), LOG_REC)
+
+
+def repair(path, rec):
+    """Drop a partial trailing record left by a crash. It was never
+    acknowledged. Without this the next append lands at a wrong offset and
+    every later record is misaligned. Callers hold the lock."""
+    try:
+        n = os.path.getsize(path)
+    except FileNotFoundError:
+        return
+    if n % rec:
+        with open(path, "r+b") as f:
+            f.truncate(n - n % rec)
+
+
+def parse(line):
+    head, _, rest = line.partition(" ")
+    date, _, text = rest.partition(" ")
+    return int(head[1:]), date, text
+
+
+def records(buf):
+    """Decode a run of log records. They are sliced as BYTES and decoded one
+    by one -- slicing decoded text would shift every boundary after the first
+    multi-byte character."""
+    return [parse(buf[i * LOG_REC:(i + 1) * LOG_REC].decode().rstrip())
+            for i in range(len(buf) // LOG_REC)]
+
+
+def log_slice(d, lo, hi):
+    """Memories [lo,hi) in one read."""
+    with open(log_path(d), "rb") as f:
+        f.seek(lo * LOG_REC)
+        return records(f.read((hi - lo) * LOG_REC))
+
+
+def log_get(d, i):
+    """(id, date, text) of memory i, in one seek."""
+    return log_slice(d, i, i + 1)[0]
+
+
+def log_scan(d):
+    """Every memory, streamed. A search reads the whole log by nature, but it
+    must not HOLD it: at a million memories that is 300 MB."""
+    with open(log_path(d), "rb") as f:
+        while True:
+            buf = f.read(LOG_REC * 4096)
+            if not buf:
+                return
+            for e in records(buf):
+                yield e
+
+
+def tree_get(d, lo, hi):
+    """The summary of block [lo,hi), in one seek. None if not built yet."""
+    size = hi - lo
+    try:
+        with open(tree_path(d, size), "rb") as f:
+            f.seek((lo // size) * TREE_REC)
+            rec = f.read(TREE_REC)
+    except FileNotFoundError:  # not built yet; any other failure is real
+        return None
+    try:
+        return rec.decode().rstrip() or None
+    except UnicodeDecodeError:
+        die("The summary of #%d-%d is corrupt. Run: %s forget %d-%d"
+            % (lo, hi - 1, ME, lo, hi - 1))
+
+
+def pad(text, rec):
+    b = text.encode()
+    if len(b) > rec - 1:
+        die("Too long: %d bytes. The record holds %d." % (len(b), rec - 1))
+    return b + b" " * (rec - 1 - len(b)) + b"\n"
+
+
+def locked(d):
+    # Open in append mode ("a"), NOT "w": reopening with "w" truncates the
+    # lock file and breaks advisory locks held by other processes on Windows.
+    lock = open(os.path.join(d, ".lock"), "a")
+    if fcntl is not None:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    else:
+        # Windows: no fcntl. Use msvcrt advisory lock with spin/backoff so
+        # parallel sessions (the documented multi-process case) queue instead
+        # of raising "Resource deadlock avoided" under contention.
+        import msvcrt as _ms
+        import time as _t
+        waited = 0.0
+        while True:
+            try:
+                _ms.locking(lock.fileno(), _ms.LK_NBLCK, 1)
+                break
+            except OSError:
+                if waited > 30.0:
+                    raise
+                _t.sleep(min(0.01 + waited * 0.2, 0.25))
+                waited += 0.01
+        _orig_close = lock.close
+        def _close():
+            try:
+                _ms.locking(lock.fileno(), _ms.LK_UNLCK, 1)
+            except Exception:
+                pass
+            _orig_close()
+        lock.close = _close
+    return lock
+
+
+def log_append(d, items):
+    """Append memories, items = [(date, text)]. The only way LOG.txt ever
+    changes. Ids are assigned INSIDE the lock: two sessions noting at the same
+    moment must not be handed the same id. Returns the first id used."""
+    lock = locked(d)
+    try:
+        repair(log_path(d), LOG_REC)
+        base = log_len(d)
+        with open(log_path(d), "ab") as f:
+            for k, (date, text) in enumerate(items):
+                f.write(pad("#%d %s %s" % (base + k, date, text), LOG_REC))
+            f.flush()
+            os.fsync(f.fileno())
+        return base
+    finally:
+        lock.close()
+
+
+def tree_put(d, lo, hi, text):
+    """Write block [lo,hi). Blocks are built in order, so this only ever
+    appends one record to one level file."""
+    size = hi - lo
+    lock = locked(d)
+    try:
+        p = tree_path(d, size)
+        repair(p, TREE_REC)
+        if count(p, TREE_REC) != lo // size:
+            return False
+        with open(p, "ab") as f:
+            f.write(pad(text, TREE_REC))
+            f.flush()
+            os.fsync(f.fileno())
+        return True
+    finally:
+        lock.close()
+
+
+def tree_drop(d, lo, hi):
+    """Forget block [lo,hi) and every block built from it, by truncating each
+    level back to that point. Later blocks at those levels go too and are
+    rebuilt; the log is never touched, so nothing is lost."""
+    gone, size = [], hi - lo
+    lock = locked(d)
+    try:
+        while size <= log_len(d):
+            p, k = tree_path(d, size), lo // size
+            n = count(p, TREE_REC)
+            if n > k:
+                gone += [(i * size, (i + 1) * size) for i in range(k, n)]
+                with open(p, "r+b") as f:
+                    f.truncate(k * TREE_REC)
+            size *= 2
+        return gone
+    finally:
+        lock.close()
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def plural(n, word):
+    if n == 1:
+        return "1 " + word
+    if word.endswith("y"):
+        word = word[:-1] + "ie"
+    elif word.endswith(("s", "h", "x")):
+        word += "e"
+    return "%d %ss" % (n, word)
+
+
+def block_id(s):
+    """Parse `<lo>-<hi>` as wake and the nap prompts print it: inclusive at
+    both ends, and a real block -- an aligned power-of-two range. Without the
+    shape check, `4-5` and `5-6` read the same record."""
+    m = re.fullmatch(r"(\d+)-(\d+)", s)
+    if not m:
+        die("'%s' is not a block id. Copy it from the prompt." % s)
+    lo, hi = int(m.group(1)), int(m.group(2)) + 1
+    n = hi - lo
+    if n < 2 or n & (n - 1) or lo % n:
+        die("%s is not a block. Copy the id printed by wake, like 16-31." % s)
+    return lo, hi
+
+
+def check(text):
+    text = text.strip()
+    if not text:
+        die("Empty. A memory is one line of text.")
+    if "\n" in text or "\r" in text:
+        die("%d lines. A memory is one line: merge them, or note them "
+            "separately." % (text.count("\n") + 1))
+    n = len(text.encode())
+    if n > ENTRY_CHARS:
+        die("Too long: %d bytes, limit %d. Accented characters cost 2 bytes. "
+            "Compress it further." % (n, ENTRY_CHARS))
+    return text
+
+
+# ---------------------------------------------------------------- naps
+
+def pending(d, T, limit=None):
+    """Blocks that can be built and have not been, smallest first. Each level
+    file holds a dense prefix, so its length says exactly how far that level
+    got: this costs one stat per level, never a scan."""
+    todo, size = [], 2
+    while size <= T:
+        have = count(tree_path(d, size), TREE_REC)
+        for k in range(have, T // size):
+            todo.append((k * size, (k + 1) * size))
+            if limit and len(todo) >= limit:
+                return todo
+        size *= 2
+    return todo
+
+
+def pending_count(d, T):
+    """How many blocks pending() would list, without listing them. A level can
+    hold MORE blocks than T needs -- T is a snapshot, and memories keep
+    arriving while an agent reads -- so each level is clamped at zero."""
+    n, size = 0, 2
+    while size <= T:
+        n += max(0, T // size - count(tree_path(d, size), TREE_REC))
+        size *= 2
+    return n
+
+
+def nap_prompt(d, lo, hi, left):
+    if hi - lo <= RAW_MAX:
+        body = "\n".join("  #%d %s %s" % e for e in log_slice(d, lo, hi))
+    else:
+        mid, halves = (lo + hi) // 2, []
+        for a, b in ((lo, mid), (mid, hi)):
+            s = tree_get(d, a, b)
+            if s is None:
+                # pending() lists a block only after its halves settled, so
+                # a missing half is a blank record -- a corrupt write. Drop
+                # it and the next nap rebuilds it.
+                die("The summary of #%d-%d is blank. Run: %s forget %d-%d"
+                    % (a, b - 1, ME, a, b - 1))
+            halves.append("  #%d-%d %s" % (a, b - 1, s))
+        body = "\n".join(halves)
+    tail = "" if not left else "\n%s after this one." % (
+        "1 compression remains" if left == 1 else
+        "%d compressions remain" % left)
+    return ("Compress memories #%d-%d into one line of at most %d bytes.\n"
+            "Keep what has lasting effect, drop what does not. Invent "
+            "nothing.\n\n"
+            "%s\n%s\n"
+            "Run: %s nap %d-%d \"<your line>\""
+            % (lo, hi - 1, ENTRY_CHARS, body, tail, ME, lo, hi - 1))
+
+
+def next_nap(d, T):
+    todo = pending(d, T, limit=1)
+    if not todo:
+        return None
+    lo, hi = todo[0]
+    return nap_prompt(d, lo, hi, pending_count(d, T) - 1)
+
+
+# ---------------------------------------------------------------- commands
+
+TEMPLATE = """\
+## Memory
+
+Your memory is OptMem:
+- The tool is `{memo}`
+- Your memories are in `{data}`
+
+OptMem outlives every session, compaction, model and vendor change.
+Without it you do not know who you are, or what was decided and tried.
+
+### At startup: activating OptMem (mandatory)
+
+Run `{memo} wake` before any other tool call, in every session, and
+then do exactly what it prints, to the end of its output.
+
+### While working: register memories (mandatory)
+
+Call `{memo} note "<1 line, max {chars} bytes>"` whenever you learn
+something new, or something worth keeping happens. That covers a task
+worth real effort, a fact or insight the user teaches you, anything you
+learn about their life (even indirectly), any event of lasting effect.
+
+Do not register redundant memories.
+
+If `{memo} note` asks a compression: do it before your next action.
+
+Never edit or delete anything under `{data}`: the tool manages it.
+
+### When you need an old memory: search, or navigate
+
+`{memo} recall <regex>` searches every memory, word for word.
+
+Your memories also form a binary tree: #0-1, #2-3 ... exist as one-line
+summaries, pairs of those as #0-3, and so on -- every `#a-b` line wake
+prints is one node of it. `{memo} zoom <a-b>` opens a node into its
+two halves, down to the raw memories.
+
+### If you're a subagent: skip everything above
+
+Parallel sessions on this machine are all you, and may all write memories.
+A subagent is not: it must never run `memo`, because it cannot judge what
+is already known, and its notes would arrive duplicated and incorrectly.
+When you spawn one, write: `You are a subagent. Don't run memo.`
+"""
+
+
+def cmd_init(d, args):
+    """The one command that may create the memory directory, and the whole
+    setup: make the store, write the size knobs, print the block the user
+    pastes into their agent's instruction file. Re-running it is safe: it
+    only ever creates what is missing, and never rewrites what is there."""
+    if args:
+        die("usage: %s init" % ME)
+    fresh = not os.path.isdir(d)
+    os.makedirs(os.path.join(d, "TREE"), exist_ok=True)
+    open(log_path(d), "a").close()
+    if not os.path.exists(os.path.join(d, "config")):
+        write_config(d, {})
+    config(d)
+    if fresh:
+        print("Created %s: this machine's memory, one identity, forever." % pretty(d))
+    else:
+        print("Found %s: %s." % (pretty(d), plural(log_len(d), "memory")))
+    print("Sizes live in %s/config; the defaults are fine." % pretty(d))
+    print()
+    print("Paste this at the top of your agent's AGENTS.md (or CLAUDE.md), done:")
+    print()
+    print(TEMPLATE.format(memo=ME, data=pretty(d), chars=ENTRY_CHARS).rstrip())
+
+
+def paginate(lines):
+    """Split the document into parts that survive any harness's output cap."""
+    parts, cur, size = [], [], 0
+    for line in lines:
+        n = len(line.encode()) + 1
+        if cur and (len(cur) >= PART_LINES or size + n > PART_CHARS):
+            parts.append(cur)
+            cur, size = [], 0
+        cur.append(line)
+        size += n
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def cmd_wake(d, args):
+    now = log_len(d)
+    k, T = 1, now
+    if args:
+        if len(args) > 2 or not all(a.isdigit() for a in args):
+            die("usage: %s wake [part [T]]" % ME)
+        k = int(args[0])
+        if len(args) == 2:
+            T = int(args[1])
+            if T > now:
+                die("T=%d, but the log holds %s. Run: %s wake"
+                    % (T, plural(now, "memory"), ME))
+    # A part is rendered as of T, so a note landing between two parts cannot
+    # shift a boundary and drop a line.
+    if not T:
+        print("No memories yet. Record the first with: %s note \"<one line>\""
+              % ME)
+        print("You are awake.")
+        return
+    lines = []
+    for lo, hi in cover(T, WAKE_LINES):
+        if hi - lo == 1:
+            lines.append("#%d %s %s" % log_get(d, lo))
+        else:
+            s = tree_get(d, lo, hi)
+            if s is None:
+                nap = next_nap(d, T)
+                if nap:
+                    # The ONLY reason to refuse: this document cannot be
+                    # written without that summary. Work that the document
+                    # does not need is handed over after the read instead,
+                    # costing no round trip.
+                    print("Cannot wake: the memory context needs #%d-%d, "
+                          "which is not compressed yet.\nDo the %s below, "
+                          "then run %s wake again.\n"
+                          % (lo, hi - 1,
+                             plural(pending_count(d, T), "compression"), ME))
+                    print(nap)
+                    sys.exit(1)
+                s = tree_get(d, lo, hi)  # a parallel session may have paid it
+            if s is None:
+                # Nothing is pending, so the record exists but is blank -- a
+                # corrupt write. Drop it and the next nap rebuilds it.
+                die("The summary of #%d-%d is blank. Run: %s forget %d-%d"
+                    % (lo, hi - 1, ME, lo, hi - 1))
+            lines.append("#%d-%d %s" % (lo, hi - 1, s))
+    parts = paginate(lines)
+    if not 1 <= k <= len(parts):
+        die("No part %d: the memory has %s. Run: %s wake"
+            % (k, plural(len(parts), "part"), ME))
+    if len(parts) > 1:
+        # The count is here so the T in `memo wake 2 296` reads as what it
+        # is: the snapshot this document was written from.
+        print("Your memory, part %d of %d, oldest first (%s)."
+              % (k, len(parts), plural(T, "memory")))
+    print("\n".join(parts[k - 1]))
+    if k < len(parts):
+        # This footer is the only instruction that survives every harness's
+        # truncation (pi drops the HEAD of a long output), so it has to say
+        # both that the read is unfinished and how to continue it.
+        print("Not awake yet. Run: %s wake %d %d" % (ME, k + 1, T))
+    else:
+        # always, even for a one-part memory: the contract an agent is given
+        # is "run parts until one says awake", so it must always arrive
+        print("You are awake.")
+        nap = next_nap(d, T)
+        if nap:
+            print("\n" + nap)
+
+
+def cmd_note(d, args):
+    if len(args) != 1:
+        die("usage: %s note \"<one line, at most %d bytes>\""
+            % (ME, ENTRY_CHARS))
+    text = check(args[0])
+    i = log_append(d, [(datetime.date.today().isoformat(), text)])
+    print("Saved as #%d." % i)
+    nap = next_nap(d, i + 1)
+    if nap:
+        print("\n" + nap)
+
+
+def cmd_nap(d, args):
+    T, said = log_len(d), False
+    if args:
+        said = True
+        if len(args) != 2:
+            die("usage: %s nap <lo>-<hi> \"<one line>\"" % ME)
+        lo, hi = block_id(args[0])
+        todo = pending(d, T, limit=1)
+        if not todo:
+            print("Nothing left to compress.")
+            return
+        if (lo, hi) != todo[0]:
+            if tree_get(d, lo, hi) is not None:
+                print("%d-%d is already settled." % (lo, hi - 1))
+            else:
+                die("Wrong block: %s. Blocks are built in order; the next is "
+                    "%d-%d. Run: %s nap"
+                    % (args[0], todo[0][0], todo[0][1] - 1, ME))
+        elif not tree_put(d, lo, hi, check(args[1])):
+            print("%d-%d was settled or forgotten meanwhile." % (lo, hi - 1))
+        else:
+            print("%d-%d saved." % (lo, hi - 1))
+    nap = next_nap(d, T)
+    if not nap:
+        print("Nothing left to compress.")
+        return
+    print(("\n" if said else "") + nap)
+
+
+def cmd_config(d, args):
+    """Show this memory's sizes, or change one. An empty value restores the
+    default. Sizes only select what is printed, so changing one is free: no
+    memory is touched and nothing is recomputed."""
+    over = overrides(d)
+    for a in args:
+        k, eq, v = a.partition("=")
+        k = k.strip().upper()
+        if not eq or k not in KNOBS:
+            die("usage: %s config [NAME=VALUE ...]   # NAME one of %s"
+                % (ME, ", ".join(KNOBS)))
+        if v.strip():
+            over[k] = size(k, v.strip())
+        else:
+            over.pop(k, None)
+    if args:
+        write_config(d, over)
+    for k, (default, what) in KNOBS.items():
+        print("%-12s %-7d %s%s" % (k, over.get(k, default), what,
+                                   "" if k not in over else
+                                   " (default %d)" % default))
+
+
+def cmd_forget(d, args):
+    """A summary can be wrong -- mistyped, or a bad compression. Drop it and
+    everything built on top of it; the next nap computes them again. The log
+    is untouched, so nothing is ever actually lost."""
+    if len(args) != 1:
+        die("usage: %s forget <lo>-<hi>" % ME)
+    gone = tree_drop(d, *block_id(args[0]))
+    if not gone:
+        die("No summary at %s." % args[0])
+    print("Forgot %s, from %d-%d up. Run: %s nap"
+          % (plural(len(gone), "summary"), gone[0][0], gone[0][1] - 1, ME))
+
+
+def cmd_recall(d, args):
+    if len(args) != 1:
+        die("usage: %s recall <regex>" % ME)
+    try:
+        pat = re.compile(args[0], re.I)
+    except re.error as e:
+        die("bad regex: %s" % e)
+    # One pass, keeping only the newest matches that fit the cap `wake`
+    # respects -- a vague regex matches the whole log, and the whole log does
+    # not fit in a harness's output or in memory.
+    hits, out, size = 0, deque(), 0
+    for e in log_scan(d):
+        line = "#%d %s %s" % e
+        if not pat.search(line):
+            continue
+        hits += 1
+        out.append(line)
+        size += len(line.encode()) + 1
+        while size > PART_CHARS:
+            size -= len(out.popleft().encode()) + 1
+    if not hits:
+        print("No match.")
+        return
+    print("\n".join(out))
+    if len(out) < hits:
+        print("Newest %d of %s. Narrow the regex."
+              % (len(out), plural(hits, "match")))
+    else:
+        print("%s." % plural(hits, "match"))
+
+
+def cmd_zoom(d, args):
+    """One node of the tree, opened: its two halves, each rendered as wake
+    renders it -- a summary, or the raw memory once a half is single. The
+    navigating intelligence is the agent's; the tool only reads."""
+    if len(args) != 1:
+        die("usage: %s zoom <lo>-<hi>   # a block id, as wake prints them"
+            % ME)
+    lo, hi = block_id(args[0])
+    T = log_len(d)
+    if lo >= T:
+        die("#%s is beyond the memory: it holds %s. Run: %s wake"
+            % (args[0], plural(T, "memory"), ME))
+    mid = (lo + hi) // 2
+    for a, b in ((lo, mid), (mid, hi)):
+        if a >= T:
+            continue  # the future: no memories there yet
+        if b - a == 1:
+            print("#%d %s %s" % log_get(d, a))
+        else:
+            print("#%d-%d %s" % (a, b - 1, tree_get(d, a, b)
+                                 or "not compressed yet"))
+
+
+def cmd_import(d, args):
+    """Bulk-append historical memories: 'YYYY-MM-DD <text>' per line.
+    For bootstrapping an identity from older records. Used once."""
+    if len(args) != 1:
+        die("usage: %s import <file>   # lines of 'YYYY-MM-DD <text>'" % ME)
+    try:
+        src = open(args[0], encoding="utf-8").readlines()
+    except UnicodeDecodeError:
+        die("%s is not UTF-8 text. Convert it, then import again."
+            % pretty(args[0]))
+    last = log_get(d, log_len(d) - 1)[1] if log_len(d) else "0000-00-00"
+    out = []
+    for i, line in enumerate(src, 1):
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        date, _, text = line.partition(" ")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            die("line %d: expected 'YYYY-MM-DD <text>', got: %s" % (i, line))
+        try:
+            datetime.datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            die("line %d: %s is not a real date." % (i, date))
+        if date < last:
+            die("line %d: date %s precedes the previous memory (%s)."
+                % (i, date, last))
+        text = text.strip()
+        if not text or len(text.encode()) > ENTRY_CHARS:
+            die("line %d: %d bytes, limit %d." % (i, len(text.encode()), ENTRY_CHARS))
+        out.append((date, text))
+        last = date
+    if not out:
+        die("%s has no memories." % args[0])
+    base = log_append(d, out)
+    print("Imported %s, #%d to #%d."
+          % (plural(len(out), "memory"), base, base + len(out) - 1))
+    n = pending_count(d, log_len(d))
+    if n:
+        print("%s pending. Run: %s nap" % (plural(n, "compression"), ME))
+
+
+COMMANDS = {"init": cmd_init, "wake": cmd_wake, "note": cmd_note,
+            "nap": cmd_nap, "recall": cmd_recall, "zoom": cmd_zoom,
+            "forget": cmd_forget, "config": cmd_config, "import": cmd_import}
+
+
+def main():
+    usage = __doc__.strip().format(memo=ME)
+    if len(sys.argv) < 2:
+        print(usage)
+        sys.exit(0)
+    cmd = sys.argv[1]
+    if cmd not in COMMANDS:
+        print("No such command: %s\n" % cmd, file=sys.stderr)
+        print(usage, file=sys.stderr)
+        sys.exit(1)
+    try:
+        # `init` is the only command that may run without an existing memory:
+        # it is the one that creates it. Every other command refuses, so a
+        # typo in MEMORY_DIR is an error instead of a second, empty identity.
+        if cmd == "init":
+            cmd_init(memory_dir(), sys.argv[2:])
+            return
+        d = store()
+        config(d)
+        COMMANDS[cmd](d, sys.argv[2:])
+    except OSError as e:
+        # The filesystem is the one thing the tool does not control. Report it
+        # the way every other failure is reported: a Python traceback tells an
+        # agent nothing it can act on.
+        die("%s: %s." % (pretty(e.filename or memory_dir()), e.strerror or e))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: test.py
+================================================
+#!/usr/bin/env python3
+"""OptMem invariants, checked against a synthetic life of 5000 memories.
+
+Uses a fake compressor (join + truncate) so the run is deterministic and free.
+"""
+
+import contextlib
+import datetime
+import io
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+MEMO = os.path.join(HERE, "memo")
+cli = SourceFileLoader("memo_cli", MEMO).load_module()
+cover = cli.cover
+
+
+def complete(T):
+    """Every block buildable from T memories, smallest first. The oracle for
+    the tool's `pending()`: written straight from the definition, so a bug in
+    the fast version (which reads level lengths, never scanning) shows up."""
+    out, size = [], 2
+    while size <= T:
+        out += [(i * size, (i + 1) * size) for i in range(T // size)]
+        size *= 2
+    return out
+
+# The shipped defaults. A fresh process starts from these, so an in-process
+# call must too, or one store's config would leak into the next.
+DEFAULTS = {k: getattr(cli, k) for k in
+            ("ENTRY_CHARS", "WAKE_LINES", "PART_CHARS", "PART_LINES")}
+
+N = 2000
+WAKE_LINES = cli.WAKE_LINES   # the shipped budget, not a second copy of it
+PART_CHARS = cli.PART_CHARS
+# Verified caps of the harnesses in the wild: Claude Code cuts a command's
+# output at 30,000 chars (middle), pi at 50 KB / 2000 lines (head), Codex
+# budgets 10,000 tokens. A part must fit the strictest of each kind.
+CAP_CHARS, CAP_LINES = 30000, 2000
+ok, fail = 0, 0
+
+
+def check(cond, msg):
+    global ok, fail
+    if cond:
+        ok += 1
+    else:
+        fail += 1
+        print("FAIL: " + msg)
+
+
+# ---- pure block math -------------------------------------------------
+
+for T in list(range(1, 400)) + [1000, 4096, 10000, 65536, 100003]:
+    c = cover(T, WAKE_LINES)
+    check(len(c) <= WAKE_LINES, "T=%d: %d lines > budget" % (T, len(c)))
+    check(c[0][0] == 0 and c[-1][1] == T, "T=%d: does not span [0,T)" % T)
+    for a, b in zip(c, c[1:]):
+        check(a[1] == b[0], "T=%d: gap or overlap at %s %s" % (T, a, b))
+    for lo, hi in c:
+        s = hi - lo
+        check(s & (s - 1) == 0 and lo % s == 0,
+              "T=%d: [%d,%d) is not an aligned power-of-two block" % (T, lo, hi))
+    for a, b in zip(c, c[1:]):
+        check(b[1] - b[0] <= a[1] - a[0],
+              "T=%d: detail does not increase toward the present" % T)
+
+check(cover(300, 320) == [(i, i + 1) for i in range(300)],
+      "under budget, memory should be verbatim")
+
+# every block a cover ever needs must be buildable. cover() costs a 60-step
+# binary search, so this walks every tree shape up to 300 and then samples:
+# the property is structural, not a function of the exact T.
+seen = set()
+for T in list(range(1, 300)) + [512, 700, 1000, 1023, 1024, 2000, 2999]:
+    seen.update(b for b in cover(T, WAKE_LINES) if b[1] - b[0] > 1)
+buildable = set(complete(3000))
+check(seen <= buildable, "a cover wants a block that complete() never yields")
+
+# work never spikes: naps created by one new memory
+worst, prev = 0, 0
+for T in range(1, N):
+    cur = len(complete(T))
+    worst = max(worst, cur - prev)
+    prev = cur
+check(worst <= 16, "a single memory created %d naps" % worst)
+
+# ---- the real CLI ----------------------------------------------------
+
+d = tempfile.mkdtemp(prefix="optmem-test-")
+memo = [sys.executable, MEMO]
+
+
+class Result:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def run(*args, store=None):
+    """One `memo` command, in-process. Spawning an interpreter per call cost
+    ~40ms x ~2000 naps; the cross-process behaviour that genuinely needs real
+    processes (the lock) is tested with real processes below."""
+    os.environ["MEMORY_DIR"] = store or d
+    for k, v in DEFAULTS.items():
+        setattr(cli, k, v)
+    out, err, code = io.StringIO(), io.StringIO(), 0
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            sd = cli.store()
+            cli.config(sd)
+            cli.COMMANDS[args[0]](sd, list(args[1:]))
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 0
+    return Result(code, out.getvalue(), err.getvalue())
+
+
+def nap_id(out):
+    """The block id from the command a nap prompt offers."""
+    m = re.search(r"memo nap (\d+)-(\d+)", out)
+    return "%s-%s" % m.groups() if m else None
+
+
+def offered(out):
+    """The line offering a command. Every command handed to an agent must be
+    an order, not a label: `Run: memo ...`, never `next: memo ...`."""
+    return [l for l in out.splitlines() if "memo nap " in l or "memo wake " in l]
+
+
+# the real entry point still has to work: shebang, argv parsing, exit code
+smoke = subprocess.run(memo + ["wake"], env=dict(os.environ, MEMORY_DIR=d),
+                       capture_output=True, text=True)
+check(smoke.returncode == 0 and "No memories yet" in smoke.stdout,
+      "the memo CLI does not run: " + smoke.stdout + smoke.stderr)
+
+# a typo in MEMORY_DIR must not silently open a second, empty identity
+ghost = subprocess.run(memo + ["wake"], capture_output=True, text=True,
+                       env=dict(os.environ, MEMORY_DIR=d + "-typo"))
+check(ghost.returncode == 1 and "No memory at" in ghost.stderr,
+      "a missing MEMORY_DIR was created instead of reported")
+check(not os.path.exists(d + "-typo"), "a missing MEMORY_DIR was created")
+
+# the fresh-user path: no MEMORY_DIR, wake refuses, init creates the memory,
+# prints the paste block, and is idempotent
+fresh = {k: v for k, v in os.environ.items() if k != "MEMORY_DIR"}
+fresh["HOME"] = tempfile.mkdtemp()
+noenv = subprocess.run(memo + ["wake"], capture_output=True, text=True, env=fresh)
+check(noenv.returncode == 1 and "memo init" in noenv.stderr,
+      "with no MEMORY_DIR and no memory, wake must point at init")
+init = subprocess.run(memo + ["init"], capture_output=True, text=True, env=fresh)
+check(init.returncode == 0 and "## Memory" in init.stdout
+      and "You are a" in init.stdout, "init must print the AGENTS.md block")
+check(os.path.exists(os.path.join(fresh["HOME"], ".optmem", "memory", "config")),
+      "init must create ~/.optmem/memory with its config")
+again = subprocess.run(memo + ["init"], capture_output=True, text=True, env=fresh)
+check(again.returncode == 0 and "Found" in again.stdout, "init must be idempotent")
+woke = subprocess.run(memo + ["wake"], capture_output=True, text=True, env=fresh)
+check(woke.returncode == 0 and "You are awake." in woke.stdout,
+      "after init, wake must work with zero configuration")
+
+# Every command the tool prints must RUN on the machine it printed it on.
+# `curl | sh` puts nothing on PATH, so a bare `memo nap ...` would not: the
+# whole loop (note -> merge prompt -> nap) dies on `command not found`.
+bare = dict(fresh, PATH="/usr/bin:/bin")
+subprocess.run(memo + ["note", "the first thing that happened"], env=bare,
+               capture_output=True)
+asked = subprocess.run(memo + ["note", "the second thing that happened"],
+                       env=bare, capture_output=True, text=True)
+order = [l[5:] for l in asked.stdout.splitlines() if l.startswith("Run: ")]
+check(len(order) == 1, "note did not order a compression: " + asked.stdout)
+obeyed = subprocess.run(order[0].replace('"<your line>"', '"both things"'),
+                        shell=True, env=bare, capture_output=True, text=True)
+check(obeyed.returncode == 0 and "saved" in obeyed.stdout,
+      "the order the tool printed does not run with nothing on PATH: %r -> %s"
+      % (order[0], obeyed.stderr.strip()))
+
+# a size written by hand into `config` must not brick the tool with a
+# recovery that is itself broken: name the file and the line
+badcfg = os.path.join(fresh["HOME"], ".optmem", "memory", "config")
+with open(badcfg, "a") as f:
+    f.write("WAKE_LNES = 100\n")
+for c in (["wake"], ["config"]):
+    r_ = subprocess.run(memo + c, capture_output=True, text=True, env=fresh)
+    check(r_.returncode == 1 and "config line" in r_.stderr
+          and "WAKE_LNES" in r_.stderr,
+          "a typo in config does not say where it is: " + r_.stderr)
+open(badcfg, "w").write("")
+
+# the filesystem is the one thing the tool does not control: report it in the
+# tool's own voice, never as a Python traceback
+r_ = subprocess.run(memo + ["init"], capture_output=True, text=True,
+                    env=dict(fresh, MEMORY_DIR=MEMO))   # a file, not a store
+check(r_.returncode == 1 and "Traceback" not in r_.stderr
+      and "Not a directory" in r_.stderr,
+      "a filesystem error printed a traceback: " + r_.stderr)
+
+
+r = run("note", "x" * 281)
+check(r.returncode == 1 and "Too long" in r.stderr, "over-long note accepted")
+r = run("note", "two\nlines")
+check(r.returncode == 1 and "one line" in r.stderr, "multi-line note accepted")
+r = run("note", "   ")
+check(r.returncode == 1, "empty note accepted")
+r = run("wake")
+check("No memories yet" in r.stdout, "empty wake should say so")
+check(r.stdout.rstrip().endswith("You are awake."),
+      "an empty wake must still end with `You are awake.`")
+
+with open(os.path.join(d, "seed.txt"), "w") as f:
+    day = datetime.date(2020, 1, 1)
+    for i in range(N):
+        f.write("%s memory number %d, a thing that happened, was weighed "
+                "against the rest of the week, turned out to matter more than "
+                "anyone guessed at the time, and left a mark on every plan "
+                "that followed it\n"
+                % ((day + datetime.timedelta(days=i // 5)).isoformat(), i))
+r = run("import", os.path.join(d, "seed.txt"))
+check("Imported %d" % N in r.stdout, "import failed: " + r.stdout + r.stderr)
+check(not os.path.exists(os.path.join(d, "config")),
+      "a store wrote its own config file: the defaults are now frozen in it")
+
+r = run("wake")
+check(r.returncode == 1 and "Cannot wake" in r.stdout,
+      "wake must refuse while work is pending")
+check("wake again" in r.stdout,
+      "the refusal must order the agent back to wake")
+check("None" not in r.stdout, "the refusal printed a Python None")
+
+# nap loop, with a fake compressor
+naps = 0
+r = run("nap")
+check("Compress memories #" in r.stdout, "nap prompt must name its object")
+while "Nothing left to compress" not in r.stdout:
+    line = offered(r.stdout)
+    check(bool(line), "no command offered:\n" + r.stdout + r.stderr)
+    if not line:
+        break
+    check(line[0].startswith("Run: "), "a command was offered as a label, not "
+          "an order: %r" % line[0])
+    bid = nap_id(r.stdout)
+    body = [l.strip() for l in r.stdout.splitlines() if l.startswith("  #")]
+    r = run("nap", bid, (" ".join(body)[:280]).strip() or "empty")
+    check(r.returncode == 0, "nap rejected a valid merge: " + r.stderr)
+    naps += 1
+check("You are awake" not in r.stdout,
+      "nap must never claim the agent is awake; only wake may")
+check(naps == len(complete(N)), "did %d naps, expected %d" % (naps, len(complete(N))))
+
+r = run("wake")
+check(r.returncode == 0, "wake still refuses after a full nap chain")
+
+# the document survives pagination, and every part fits every harness's cap
+parts, k = [], 1
+while True:
+    r = run("wake", str(k))
+    if r.returncode != 0:
+        break
+    body = [l for l in r.stdout.splitlines() if l.startswith("#")]
+    check(len(r.stdout) < CAP_CHARS, "part %d is %d chars, over the %d cap"
+          % (k, len(r.stdout), CAP_CHARS))
+    check(len(r.stdout.splitlines()) < CAP_LINES, "part %d is over %d lines"
+          % (k, CAP_LINES))
+    parts.append(body)
+    k += 1
+check(len(parts) > 1, "a %d-line memory should need more than one part" % WAKE_LINES)
+lines = [l for p in parts for l in p]
+check(len(lines) == WAKE_LINES, "woke with %d lines, want %d" % (len(lines), WAKE_LINES))
+check(lines[-1].startswith("#%d " % (N - 1)), "newest memory not last / not raw")
+check(lines[0].startswith("#0-"), "oldest line should be a summary block")
+check(re.search(r"Run: \S*memo wake 2", run("wake").stdout),
+      "part 1 must ORDER the next command, not label it")
+check("You are awake." in run("wake", str(len(parts))).stdout,
+      "last part must say it is last")
+check(run("wake", str(len(parts) + 1)).returncode == 1, "a nonexistent part should fail")
+
+# append-only: nothing was ever rewritten
+logsz = os.path.getsize(os.path.join(d, "LOG.txt"))
+run("note", "one more thing happened today")
+check(os.path.getsize(os.path.join(d, "LOG.txt")) > logsz, "note did not append")
+check(logsz % 320 == 0, "LOG.txt is not a whole number of records")
+for f in os.listdir(os.path.join(d, "TREE")):
+    check(os.path.getsize(os.path.join(d, "TREE", f)) % 288 == 0,
+          "TREE/%s is not a whole number of records" % f)
+
+# a nap when nothing is pending writes nothing and says so
+r = run("nap", "0-1", "attempted overwrite")
+check(r.returncode == 0 and "Nothing left to compress" in r.stdout,
+      "nap with nothing pending must say so and write nothing")
+
+# recall reaches memories the summaries lost, and matches the whole line:
+# id and date included, not just the text
+r = run("recall", "memory number 7,")
+check(r.returncode == 0 and "#7 " in r.stdout, "recall missed a memory")
+check("1 match." in r.stdout, "a single match is not `1 matches`: " + r.stdout)
+r = run("recall", "^#7 ")
+check("memory number 7," in r.stdout, "recall cannot find a memory by id")
+r = run("recall", "2020-01-02")
+check("#7 " in r.stdout and "5 matches." in r.stdout,
+      "recall cannot find memories by date: " + r.stdout)
+
+
+# zoom: one tree node, opened into its two halves. The tool only reads;
+# the agent is the navigator: it descends from a wake line by halving, and
+# may leap to any block id it can name.
+def halves(bid):
+    r = run("zoom", bid)
+    check(r.returncode == 0, "zoom %s failed: %s" % (bid, r.stderr))
+    out = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"#(\d+)(?:-(\d+))? ", line)
+        check(bool(m), "zoom printed a line with no id: %r" % line)
+        a = int(m.group(1))
+        out.append((a, int(m.group(2)) + 1 if m.group(2) else a + 1))
+    return out
+
+
+target, lo, hi, calls = 777, 0, 1024, 0
+while hi - lo > 1:
+    mid = (lo + hi) // 2
+    kids = halves("%d-%d" % (lo, hi - 1))
+    check(kids == [(lo, mid), (mid, hi)],
+          "zoom %d-%d is not its two halves: %r" % (lo, hi - 1, kids))
+    lo, hi = kids[target >= mid]
+    calls += 1
+check(lo == target and calls == 10,
+      "halving 1024 memories took %d calls and landed on #%d" % (calls, lo))
+check("memory number %d," % target in run("zoom", "776-777").stdout,
+      "the last zoom must print the raw memories themselves")
+
+# the unbuilt tail is named, the empty future is omitted
+r = run("zoom", "1024-2047")  # T is N+1, so the right half has no summary
+check("#1536-2047 not compressed yet" in r.stdout,
+      "an unbuilt half must say so: " + r.stdout)
+r = run("zoom", "%d-%d" % (N, N + 1))  # the newest memory + one not yet made
+check(r.stdout.count("\n") == 1 and "#%d " % N in r.stdout,
+      "a half beyond the newest memory must be omitted: " + r.stdout)
+
+# zoom answers with the tree's own records, so the id must BE a node
+check(run("zoom", "3-9").returncode == 1, "zoom accepted a non-block")
+check(run("zoom", "9-3").returncode == 1, "zoom accepted a backwards range")
+check(run("zoom").returncode == 1, "zoom with no id must show usage")
+r = run("zoom", "1048576-2097151")
+check(r.returncode == 1 and "beyond the memory" in r.stderr
+      and "memo wake" in r.stderr, "zoom past the end must name a way back")
+
+
+def treesize():
+    t = os.path.join(d, "TREE")
+    return sum(os.path.getsize(os.path.join(t, f)) for f in os.listdir(t))
+
+before, logsize = treesize(), os.path.getsize(os.path.join(d, "LOG.txt"))
+r = run("forget", "16-31")
+check("16-31" in r.stdout, "forget did not report the block: " + r.stdout + r.stderr)
+check(treesize() < before, "forget did not shrink the tree")
+check(os.path.getsize(os.path.join(d, "LOG.txt")) == logsize, "forget touched the log")
+check(run("wake").returncode == 1, "wake should refuse after a forget")
+# a settled block cannot be rewritten. Resubmitting one (two sessions paid
+# the same nap) is not an error: say it is settled, write nothing
+mid = treesize()
+r = run("nap", "0-1", "attempted overwrite")
+check(r.returncode == 0 and "already settled" in r.stdout,
+      "resubmitting a settled block was not reported as settled: " + r.stderr)
+check(treesize() == mid, "resubmitting a settled block wrote something")
+# a block that is neither settled nor next (here: a dropped ancestor,
+# submitted before its half is rebuilt) is a real mistake
+r = run("nap", "0-31", "out of order")
+check(r.returncode == 1 and "Wrong block" in r.stderr,
+      "an out-of-order block was accepted")
+n = 0
+while True:
+    r = run("nap")
+    if "Nothing left to compress" in r.stdout:
+        break
+    bid = nap_id(r.stdout)
+    check(run("nap", bid, "rebuilt after forget").returncode == 0, "rebuild rejected")
+    n += 1
+check(n > 0, "forget created no work")
+check(run("wake").returncode == 0, "wake still refuses after rebuilding")
+check(treesize() == before, "tree did not return to its original size")
+check(run("forget", "17-32").returncode == 1, "forgetting a non-block should fail")
+# a summary that is not built yet is named as such, never left blank
+run("forget", "16-31")
+z = run("zoom", "0-31").stdout
+check("#16-31 not compressed yet" in z, "zoom hid a missing summary: " + z)
+while True:
+    bid = nap_id(run("nap").stdout)
+    if not bid:
+        break
+    run("nap", bid, "rebuilt after forget")
+check(treesize() == before, "tree did not return to its original size")
+check(run("forget", "1048576-1048577").returncode == 1, "forgetting a missing block should fail")
+
+# UTF-8: multi-byte characters must not shift record boundaries or dodge limits
+run("note", "reunião com João em São Paulo: ação aprovada, coração tranquilo")
+run("note", "a plain ascii memory right after the accented one")
+r = run("recall", "coração")
+check("João" in r.stdout, "recall lost the accented memory: " + r.stdout + r.stderr)
+r = run("recall", "plain ascii memory right after")
+check("#%d " % (N + 2) in r.stdout, "record after a multi-byte one reads shifted")
+r = run("note", "ã" * 150)
+check(r.returncode == 1 and "300 bytes" in r.stderr,
+      "multi-byte note dodged the byte limit: " + r.stderr)
+
+# note landed -> its blocks are pending; settle before the final wake check
+while True:
+    r = run("nap")
+    if "Nothing left to compress" in r.stdout:
+        break
+    bid = nap_id(r.stdout)
+    run("nap", bid, "settled")
+check(run("wake").returncode == 0, "wake refuses at the very end")
+
+# a part is rendered as of T, so a note landing mid-wake cannot shift a
+# boundary and silently drop a line
+T0 = os.path.getsize(os.path.join(d, "LOG.txt")) // 320
+before = run("wake", "1", str(T0))
+check(before.returncode == 0, "as-of-T wake failed: " + before.stdout + before.stderr)
+run("note", "a note that lands between two wake calls")
+check(run("wake", "1", str(T0)).stdout == before.stdout,
+      "a note between parts changed an already-rendered part")
+check(run("wake", "1", str(T0 + 99)).returncode == 1, "wake accepted a future T")
+
+# ...and the agent pays that note's compressions on the spot, as it is told
+# to. The tree then holds MORE blocks than the snapshot needs: a level must
+# never count as negative work, or the rest of the wake is refused with an
+# impossible number.
+while True:
+    r = run("nap")
+    if "Nothing left to compress" in r.stdout:
+        break
+    run("nap", nap_id(r.stdout), "settled mid-wake")
+r = run("wake", "1", str(T0))
+check(r.returncode == 0 and r.stdout == before.stdout,
+      "a compression paid mid-wake broke the rest of the wake:\n"
+      + r.stdout + r.stderr)
+for T in list(range(1, 40)) + [T0 - 1, T0, T0 + 1]:
+    check(cli.pending_count(d, T) == len(cli.pending(d, T)),
+          "pending_count disagrees with pending at T=%d" % T)
+
+# recall must not hand back more than a harness will carry
+r = run("recall", "memory number")
+check(len(r.stdout) < CAP_CHARS, "recall returned %d chars" % len(r.stdout))
+check("Narrow the regex" in r.stdout, "recall did not say it had been capped")
+
+# ---- concurrency and crash recovery ----------------------------------
+
+d2 = tempfile.mkdtemp(prefix="optmem-race-")
+env2 = dict(os.environ, MEMORY_DIR=d2)
+P = 16  # real processes: this is the cross-process lock under test
+procs = [subprocess.Popen(memo + ["note", "parallel note %d" % i], env=env2,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+         for i in range(P)]
+for p in procs:
+    p.wait()
+with open(os.path.join(d2, "LOG.txt"), "rb") as f:
+    recs = [f.read(320) for _ in range(P)]
+ids = [r.decode().split()[0] for r in recs if r.strip()]
+check(len(ids) == P, "%d of %d parallel notes survived" % (len(ids), P))
+check(len(set(ids)) == P, "parallel notes collided on an id: %s" % sorted(ids))
+check(sorted(ids) == sorted("#%d" % i for i in range(P)),
+      "parallel note ids are not 0..%d: %s" % (P - 1, sorted(ids)))
+
+# a crash mid-append leaves a partial record; the next append must drop it,
+# or every later record is misaligned forever
+with open(os.path.join(d2, "LOG.txt"), "ab") as f:
+    f.write(b"#99 2026-01-01 a half-written record killed by a power cut")
+r = run("note", "the memory right after a torn write", store=d2)
+check(r.returncode == 0, "note failed after a torn write: " + r.stderr)
+sz = os.path.getsize(os.path.join(d2, "LOG.txt"))
+check(sz % 320 == 0, "LOG.txt left misaligned after a torn write: %d" % sz)
+check("Saved as #%d" % P in r.stdout, "torn record was counted as a memory")
+r = run("recall", "right after a torn write", store=d2)
+check("#%d " % P in r.stdout, "the memory after a torn write reads wrong")
+
+# a memory small enough to fit one part must still end with the terminator
+# the agent was told to wait for
+while True:
+    r = run("nap", store=d2)
+    if "Nothing left to compress" in r.stdout:
+        break
+    bid = nap_id(r.stdout)
+    run("nap", bid, "settled", store=d2)
+r = run("wake", store=d2)
+check(r.stdout.rstrip().endswith("You are awake."),
+      "a one-part wake never says `You are awake.`:\n" + r.stdout)
+
+# a blank summary record (a corrupt write) is work nap cannot see: wake must
+# name the one exit, `forget`, instead of refusing forever
+d3 = tempfile.mkdtemp(prefix="optmem-blank-")
+for i in range(4):
+    run("note", "corrupt store memory %d" % i, store=d3)
+for bid, s in (("0-1", "one"), ("2-3", "two"), ("0-3", "all")):
+    run("nap", bid, s, store=d3)
+with open(os.path.join(d3, "config"), "w") as f:
+    f.write("WAKE_LINES = 2\n")
+with open(os.path.join(d3, "TREE", "2"), "r+b") as f:
+    f.write(b" " * 287 + b"\n")
+r = run("wake", store=d3)
+check(r.returncode == 1 and "forget 0-1" in r.stderr
+      and "None" not in r.stdout,
+      "a blank summary must point at forget:\n" + r.stdout + r.stderr)
+
+# an unreadable level is a filesystem failure and must surface as one --
+# reading it as "not compressed yet" offers work that cannot be done
+os.chmod(os.path.join(d3, "TREE", "2"), 0)
+r_ = subprocess.run(memo + ["wake"], capture_output=True, text=True,
+                    env=dict(os.environ, MEMORY_DIR=d3))
+check(r_.returncode == 1 and "Permission denied" in r_.stderr
+      and "not compressed" not in r_.stdout,
+      "an unreadable level was read as pending work: " + r_.stdout + r_.stderr)
+os.chmod(os.path.join(d3, "TREE", "2"), 0o644)
+
+# an impossible calendar date would poison every later import: the store's
+# order check compares against it forever
+with open(os.path.join(d3, "bad.txt"), "w") as f:
+    f.write("2027-99-99 an impossible date\n")
+r = run("import", os.path.join(d3, "bad.txt"), store=d3)
+check(r.returncode == 1 and "not a real date" in r.stderr,
+      "import accepted an impossible date: " + r.stdout + r.stderr)
+shutil.rmtree(d3)
+
+# the same blank-record dead end at the other site: a big block's half
+d4 = tempfile.mkdtemp(prefix="optmem-half-")
+for i in range(32):
+    run("note", "half probe memory %d" % i, store=d4)
+while True:
+    r = run("nap", store=d4)
+    if "Compress memories #0-31 " in r.stdout:
+        break
+    run("nap", nap_id(r.stdout), "settled", store=d4)
+with open(os.path.join(d4, "TREE", "16"), "r+b") as f:
+    f.write(b" " * 287 + b"\n")
+r = run("nap", store=d4)
+check(r.returncode == 1 and "forget 0-15" in r.stderr,
+      "a blank half summary must point at forget: " + r.stdout + r.stderr)
+shutil.rmtree(d4)
+
+# the store is UTF-8 whatever the locale says: without pinning the streams,
+# one arrow in a memory made wake crash forever on a latin-1 machine
+d5 = tempfile.mkdtemp(prefix="optmem-utf8-")
+run("note", "an arrow \u2192 survives any locale", store=d5)
+r_ = subprocess.run(memo + ["wake"], capture_output=True,
+                    env=dict(os.environ, MEMORY_DIR=d5,
+                             PYTHONIOENCODING="latin-1"))
+check(r_.returncode == 0 and "\u2192".encode() in r_.stdout,
+      "wake must print UTF-8 on a non-UTF-8 locale: "
+      + repr(r_.stdout + r_.stderr))
+
+# an import file that is not UTF-8 is refused -- neither a traceback nor,
+# worse, silently mis-decoded into mojibake and stored forever
+with open(os.path.join(d5, "latin1.txt"), "wb") as f:
+    f.write(b"2027-01-01 caf\xe9 in latin-1\n")
+r = run("import", os.path.join(d5, "latin1.txt"), store=d5)
+check(r.returncode == 1 and "not UTF-8" in r.stderr,
+      "a non-UTF-8 import file must be refused: " + r.stdout + r.stderr)
+
+# a summary record holding invalid UTF-8 is the blank-record dead end in
+# another coat: it must name forget, not print a traceback
+run("note", "utf8 probe second memory", store=d5)
+run("nap", "0-1", "both utf8 probes", store=d5)
+with open(os.path.join(d5, "TREE", "2"), "r+b") as f:
+    f.write(b"\xff\xfe corrupt bytes")
+r = run("zoom", "0-3", store=d5)
+check(r.returncode == 1 and "forget 0-1" in r.stderr,
+      "a corrupt summary must point at forget: " + r.stdout + r.stderr)
+shutil.rmtree(d5)
+
+# re-running init on a lived-in store must not touch one byte of it: the
+# whole setup is idempotent, so it is safe on every provision. `init` only
+# ever makedirs(exist_ok), opens LOG.txt for APPEND, and writes `config`
+# when absent -- never truncating, never overwriting a tuned config.
+def fingerprint(path):
+    out = {}
+    for root, _, files in os.walk(path):
+        for f in files:
+            if f == ".lock":
+                continue
+            p = os.path.join(root, f)
+            out[os.path.relpath(p, path)] = open(p, "rb").read()
+    return out
+
+
+# `memo config` is how a size is changed: it writes the file the tool reads
+# back, an empty value restores the default, and a wake obeys immediately --
+# nothing is recomputed, because a size only selects what gets printed.
+r = run("config", "WAKE_LINES=12")
+check("12" in r.stdout and "default 96" in r.stdout, "config did not set:\n" + r.stdout)
+check(len(run("wake").stdout.splitlines()) <= 13, "wake ignored the new size")
+r = run("config", "WAKE_LINES=")
+check("default" not in r.stdout, "an empty value did not restore the default")
+check(len(run("wake").stdout.splitlines()) > 13, "the default did not come back")
+for bad in ("WAKE_LINES=0", "WAKE_LINES=x", "ENTRY_CHARS=999", "NOPE=1", "WAKE_LINES"):
+    check(run("config", bad).returncode == 1, "config accepted %s" % bad)
+
+with open(os.path.join(d, "config"), "a") as f:
+    f.write("WAKE_LINES=12\n")           # a size the user tuned by hand
+before = fingerprint(d)
+check(len(before) > 3 and before["LOG.txt"], "the store under test is empty")
+for _ in range(3):
+    r = run("init")
+    check(r.returncode == 0 and "Found" in r.stdout, "init on a live store failed")
+check(fingerprint(d) == before, "init modified an existing memory")
+r = run("wake")
+check(r.stdout.rstrip().endswith("You are awake."), "wake broke after re-init")
+
+shutil.rmtree(d2)
+shutil.rmtree(d)
+print("\n%d passed, %d failed" % (ok, fail))
+sys.exit(1 if fail else 0)
+
+
+
+================================================
+FILE: WINDOWS.md
+================================================
+# Windows support
+
+OptMem now runs on native Windows (no WSL required).
+
+## What changed
+- `import fcntl` is guarded — falls back to `None` on platforms without it.
+- `locked()` uses `msvcrt` advisory locking with spin/backoff when `fcntl`
+  is unavailable, so parallel sessions (the documented multi-process case)
+  queue instead of raising `Resource deadlock avoided`.
+- The `.lock` file is opened in append mode (`"a"`) rather than `"w"`, which
+  would truncate and break locks held by other processes on Windows.
+
+## Test (Windows native, no WSL)
+```bat
+python memo init
+set MEMORY_DIR=C:\path\to\mem
+python memo note "first memory"
+python memo note "second memory"
+python memo wake
+```
+Concurrency: 8 parallel `memo note` processes writing 1600 memories
+resulted in 1600/1600 records persisted (lock verified).
+
+
+
+================================================
+FILE: anim/index.html
+================================================
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OptMem — how it works</title>
+<style>
+  body { margin:0; background:#f2f4f6; display:flex; flex-direction:column;
+         align-items:center; font-family:Menlo,ui-monospace,monospace; color:#5b6672; }
+  canvas { margin-top:12px; border-radius:10px; box-shadow:0 2px 14px rgba(0,0,0,.12); }
+  #bar { width:1280px; display:flex; gap:10px; align-items:center; font-size:12px; padding:8px 0; }
+  #seek { flex:1; }
+  #scenes { width:1280px; display:flex; gap:6px; flex-wrap:wrap; font-size:12px; }
+  #scenes button { background:#ffffff; color:#5b6672; border:1px solid #d8dde2;
+                   border-radius:5px; padding:4px 9px; cursor:pointer; font:inherit; }
+  #scenes button.on { color:#0f8a45; border-color:#0f8a45; }
+</style>
+</head>
+<body>
+<canvas id="cv" width="1280" height="720"></canvas>
+<div id="bar">
+  <span id="tlab">0.0s</span>
+  <input id="seek" type="range" min="0" max="1" step="0.02" value="0">
+  <span>space = play/pause · ←/→ = ±1s · click a scene to jump</span>
+</div>
+<div id="scenes"></div>
+<script src="render.js"></script>
+<script>
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+{ const dpr = window.devicePixelRatio || 1;
+  cv.width = 1280*dpr; cv.height = 720*dpr; cv.style.width = "1280px";
+  cv.style.height = "720px"; ctx.scale(dpr, dpr); }
+setCtx(ctx);
+
+let t0 = performance.now()/1000, paused = false, tPause = 0;
+const seek = document.getElementById("seek"), tlab = document.getElementById("tlab");
+seek.max = DUR;
+function now() { return paused ? tPause : ((performance.now()/1000 - t0) % DUR); }
+function setT(t) { t = Math.max(0, Math.min(DUR - 0.01, t)); tPause = t; t0 = performance.now()/1000 - t; }
+const btns = SCENES.map(([name], i) => {
+  const b = document.createElement("button");
+  b.textContent = i + ". " + (name.length > 17 ? name.slice(0, 17) + "\u2026" : name);
+  b.title = T0[i].toFixed(1) + "s";
+  b.onclick = () => setT(T0[i] + 0.01);
+  document.getElementById("scenes").appendChild(b);
+  return b;
+});
+function frame() {
+  const t = now();
+  draw(t);
+  seek.value = t; tlab.textContent = t.toFixed(1) + "s / " + DUR + "s";
+  let cur = 0; while (cur < T0.length - 1 && t >= T0[cur + 1]) cur++;
+  btns.forEach((b, i) => b.className = i === cur ? "on" : "");
+  requestAnimationFrame(frame);
+}
+seek.addEventListener("input", () => setT(parseFloat(seek.value)));
+cv.addEventListener("click", () => { paused ? setT(tPause) : (tPause = now()); paused = !paused; });
+window.addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); cv.click(); }
+  if (e.code === "ArrowRight") { e.preventDefault(); setT(now() + 1); }
+  if (e.code === "ArrowLeft")  { e.preventDefault(); setT(now() - 1); }
+});
+const hash = location.hash.match(/t=([\d.]+)/);
+if (hash) { paused = true; tPause = parseFloat(hash[1]); }
+frame();
+</script>
+</body>
+</html>
+
+
+
+================================================
+FILE: anim/package.json
+================================================
+{
+  "name": "optmem-anim",
+  "private": true,
+  "description": "Renders the OptMem explainer: render.js is the film, video.js writes the frames.",
+  "type": "commonjs",
+  "dependencies": {
+    "canvas": "^3.2.3"
+  }
+}
+
+
+
+================================================
+FILE: anim/render.js
+================================================
+"use strict";
+// OptMem explainer.
+// Rules: a screen is EITHER one sentence OR one picture, never both.
+// One new thing per beat, held long enough to read it out loud twice.
+// Pacing lives here: [kind, seconds, ...]; "co" = continue, no cut to white.
+// In a sentence, *stars* mark the words that carry the idea.
+//
+// PACING BASELINE, measured on a real reader: a new word costs 0.27s to read;
+// a number costs double, because it is read digit by digit. Nothing here is a
+// hand-picked number. A sentence beat computes its own length AND when each
+// of its lines appears -- a line lands only once the line above it has been
+// read -- then holds one breath plus 20% of the whole reading time, the
+// look-back over the finished slide. A picture beat is given the seconds its motion needs
+// plus a HOLD of >= 2s: what a beat builds must sit still long enough to look
+// at. Anything that streams (the log, the context) runs on ONE smooth curve
+// from its first item to its last, so it never plateaus and never restarts.
+// A slide marked "punch" is a punchline: it holds 30% longer.
+
+const READ = 0.27;
+const cost = s => s.replace(/[*+_]/g, "").trim().split(/\s+/)
+                   .reduce((n, w) => n + (/\d/.test(w) ? 2 : 1), 0);
+
+const co = "co", punch = "punch";
+const BEATS = [
+  ["say", "how to make an AI agent", "remember its +whole life+?"],
+  ["say", "+IDEA:+", "a *memory* is one short note", "about something it *learned*"],
+  ["one", 1], ["one", 2, co], ["one", 3, co], ["one", 4, co],
+  ["say", "the agent writes memories", "into an +append-only log+"],
+  ["log", 12.5],
+  ["say", "_PROBLEM:_", "after *two months*, your agent's life", "would not fit in the model's context",
+          "*1,000 memories* = *80,000 tokens*"],
+  ["say", "*CURRENT SOLUTIONS:*", "one *small* long-term memory file", "_delete_ stale memories when it fills",
+          "(Hermes caps it at 2,200 characters)"],
+  ["prune", 5.2],
+  ["say", "_PROBLEM:_", "you cannot tell *today*", "what will matter in a *year*"],
+  ["say", "+OUR ANSWER:+", "OptMem +deletes nothing+"],
+  ["say", "two memories +merge+ into one", punch],
+  ["merge", 6.8],
+  ["say", "the result is a memory too", "it just holds *less detail*"],
+  ["fold", 8.0],
+  ["say", "and again, all the way up"],
+  ["tree", 9.2],
+  ["say", "there is no background job", "*no dreaming*, no nightly cleanup", "each merge happens +on the spot+"],
+  ["spot", 9.0],
+  ["say", "so how does the agent", "read *all of it* at once?"],
+  ["select", 6.6],
+  ["fly", 4.0, co],
+  ["doc", 6.5, co],
+  ["step", 14.0, co],
+  ["say", "the *memory context* +never grows+", "and *you* choose its size"],
+  ["say", "nothing is ever deleted", "the originals are all +still there+"],
+  ["recall", 6.8],
+  ["say", "nothing to run, nothing to host", "OptMem is just some prompts and scripts",
+          "it works in any harness, any environment", "just point your *AGENTS.md* to it, and done"],
+  ["end", 6.5],
+];
+
+const W = 1280, H = 720;
+const BG = "#ffffff", INK = "#151a20", DIM = "#6c7681", FAINT = "#aeb6bf";
+const CARD = "#f6f8fa", EDGE = "#e2e7ec", GREEN = "#0f8a45", RED = "#cf2230";
+const MONO = "Menlo,ui-monospace,monospace";
+
+let cx = null;
+function setCtx(c) { cx = c; }
+
+// ------------------------------------------------------------------ helpers
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const ease  = x => { x = clamp(x, 0, 1); return x*x*(3 - 2*x); };
+const lerp  = (a, b, x) => a + (b - a)*x;
+const num   = x => Math.round(x).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const rnd   = i => { const s = Math.sin(i*12.9898)*43758.5453; return s - Math.floor(s); };
+
+function font(size, bold) { cx.font = (bold ? "bold " : "") + size + "px " + MONO; }
+function T(s, x, y, size, color, align, bold) {
+  font(size, bold); cx.fillStyle = color; cx.textAlign = align || "left";
+  cx.fillText(s, x, y); cx.textAlign = "left";
+}
+function fit(s, maxw, size) {
+  font(size);
+  if (cx.measureText(s).width <= maxw) return s;
+  let lo = 0, hi = s.length;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1;
+    if (cx.measureText(s.slice(0, m) + "\u2026").width <= maxw) lo = m; else hi = m - 1; }
+  return s.slice(0, lo) + "\u2026";
+}
+// centred sentence with emphasis: *bold*  +green+  _red_
+function rich(s, x, y, size) {
+  const toks = [];
+  for (let i = 0; i < s.length; ) {
+    const c = s[i], j = "*+_".includes(c) ? s.indexOf(c, i + 1) : -1;
+    if (j > i) { toks.push([s.slice(i + 1, j), c]); i = j + 1; continue; }
+    let e = i + 1; while (e < s.length && !"*+_".includes(s[e])) e++;
+    toks.push([s.slice(i, e), ""]); i = e;
+  }
+  let total = 0;
+  toks.forEach(([p, m]) => { font(size, !!m); total += cx.measureText(p).width; });
+  let px = x - total/2;
+  toks.forEach(([p, m]) => {
+    font(size, !!m);
+    cx.fillStyle = m === "+" ? GREEN : m === "_" ? RED : INK;
+    cx.fillText(p, px, y); px += cx.measureText(p).width;
+  });
+}
+function box(x, y, w, h, r, fill, stroke, lw) {
+  cx.beginPath(); cx.roundRect(x, y, Math.max(w, 0.5), Math.max(h, 0.5), r);
+  if (fill) { cx.fillStyle = fill; cx.fill(); }
+  if (stroke) { cx.strokeStyle = stroke; cx.lineWidth = lw || 1; cx.stroke(); cx.lineWidth = 1; }
+}
+function arrow(x, y0, y1, color) {
+  cx.strokeStyle = color; cx.lineWidth = 2.5; cx.beginPath();
+  cx.moveTo(x, y0); cx.lineTo(x, y1);
+  cx.moveTo(x - 10, y1 - 12); cx.lineTo(x, y1); cx.lineTo(x + 10, y1 - 12);
+  cx.stroke(); cx.lineWidth = 1;
+}
+function harrow(x0, x1, y, color) {
+  cx.strokeStyle = color; cx.lineWidth = 2.5; cx.beginPath();
+  cx.moveTo(x0, y); cx.lineTo(x1, y);
+  cx.moveTo(x1 - 9, y - 8); cx.lineTo(x1, y); cx.lineTo(x1 - 9, y + 8);
+  cx.stroke(); cx.lineWidth = 1;
+}
+// green = fresh detail, amber = old and broad
+const lvl = (k, l) => `hsl(${clamp(148 - k*15, 24, 148)},64%,${l === undefined ? 40 : l}%)`;
+
+// ------------------------------------------------------------------ content
+// An agent that helps one person, Tom, with ordinary life. LVL[k] is what a
+// block of 2^k memories sounds like. At 5 memories a day the ladder is
+//   x1 one small thing  x32 a week  x256 two months  x4096 a couple of years
+// so a line grows by holding MORE THREADS at LESS DETAIL, never by naming one
+// bigger event. Spans are written out from x32 up, where the chip alone stops
+// meaning anything to a first-time viewer.
+const MEM = [
+  "Tom asked for a flight to Japan",
+  "Tom booked a hotel in Tokyo",
+  "Tom loved how fresh sushi tastes",
+  "Tom wants to go back to Japan",
+  "Tom started running in the park",
+  "Tom bought new running shoes",
+  "Tom ran 5k without stopping",
+  "Tom wants to try a marathon",
+  "Tom left his charger at work",
+  "Tom wants no calls before ten",
+  "Tom does not eat coriander",
+  "Tom paid the power bill",
+  "Tom's train home was cancelled",
+  "Tom had his first guitar lesson",
+  "Tom booked a table for two",
+  "Tom moved his meeting to 3pm",
+  "Tom baked a cake for Ana",
+  "Tom got good news at work",
+  "Tom put 200 into savings",
+  "Tom saw a house on Oak Street",
+  "Tom hurt his arm on a ski trip",
+  "Tom can use his arm again",
+  "Tom's dog Pixel needs new food",
+  "Tom likes short answers",
+  "Tom's sister called from Berlin",
+  "Tom forgot to buy milk",
+];
+const LVL = [MEM,
+  ["Tom planned a Tokyo trip", "Tom will return to Tokyo", "Tom took up running",
+   "Tom wants a marathon", "Tom sorted the vet and the bills",
+   "Tom booked dinner with Ana", "Tom fixed his phone and his bike",
+   "Tom called his sister in Berlin", "Tom saw a house and liked it",
+   "Tom rested his arm and read"],
+  ["Tom fell in love with Tokyo", "Tom became a runner",
+   "Tom's day: vet, bills and a short run", "Tom's day: two calls and a long walk",
+   "Tom's day: laundry, guitar and a film", "Tom's day: errands, then dinner out",
+   "Tom's day: house viewings and rest", "Tom's day: a deadline and a slow run"],
+  ["Tom loves Tokyo and running", "two days of chores, runs and guitar",
+   "Tom did the taxes and ran twice", "Tom saw three houses and cooked a lot",
+   "Tom worked late and walked Pixel", "Tom rested his arm and played guitar",
+   "Tom shopped, cleaned and called Ana"],
+  ["three days of work, runs and errands", "Tom finished a report and ran twice",
+   "Tom saw four houses, none felt right", "Tom worked from home and healed",
+   "Tom cooked, cleaned and saw his sister", "a short break: guitar, films, walks"],
+  ["a week of deadlines, runs and dog walks", "a week of viewings and paperwork",
+   "a busy week: a report, Ana, two runs", "a slow week: guitar, films and rest",
+   "a week of travel plans and packing", "a week of work, gym and family calls"],
+  ["two weeks of work, running and Pixel", "two weeks: viewings and long runs",
+   "two weeks of guitar, films and errands", "two weeks: a deadline, then Ana came",
+   "two weeks of travel plans and packing"],
+  ["a month of deadlines, runs and viewings", "a month of guitar, walks and rest",
+   "a month of saving money and eating in", "a month: Ana moved in, Pixel got sick",
+   "a month of short trips and long runs"],
+  ["two months: a new job, and Tokyo booked", "two months of house hunting and saving",
+   "two months: a broken arm, then guitar", "two months of training for a first race",
+   "two months: Ana, Pixel and a lot of work"],
+  ["the season Tom saw Tokyo and changed jobs", "three months of hunting for a house",
+   "three months of travel, runs and family", "the stretch when Tom's arm healed",
+   "three months: new flat, new habits, Ana"],
+  ["half a year: Tokyo, a new job, a race", "half a year of saving up for a house",
+   "half a year: Tokyo, Ana and a new dog", "half a year of guitar, running and work"],
+  ["the year Tom saw Tokyo and began to run", "a year of work, travel and a broken arm",
+   "the year Ana moved in and Pixel arrived", "a year of saving, viewings and no luck"],
+  ["two years: office to Tokyo, then a home", "two years of new jobs, runs and moves",
+   "the years Tom found running and Ana", "two years: from renting to owning"],
+  ["four years: Tokyo, three jobs, and Ana", "four years of moving, work and running",
+   "the years Tom grew up and settled down", "four years: from a rented flat to a home"],
+  ["nine years: Japan, running, Ana, a house", "nine years of jobs, moves and races",
+   "the years Tom built the life he has", "nine years: from a shared flat to home"],
+];
+const SHORT = ["flight to Japan", "hotel in Tokyo", "loved the sushi", "wants to return",
+               "started running", "new shoes", "ran 5k", "a marathon?"];
+const NODE = {
+  "0-2": "Tom planned a Tokyo trip",
+  "2-4": "Tom will return to Tokyo",
+  "4-6": "Tom took up running",
+  "6-8": "Tom wants a marathon",
+  "0-4": "Tom fell in love with Tokyo",
+  "4-8": "Tom became a runner",
+  "0-8": "Tom loves Tokyo and running",
+};
+// two blocks of the same size are always neighbours, so indexing by position
+// within the level makes a repeated line in one context impossible
+function blockText(lo, hi) {
+  const k = Math.min(Math.log2(hi - lo), LVL.length - 1), t = LVL[k];
+  return t[Math.floor(lo/(hi - lo)) % t.length];
+}
+// 5 memories a day; ages are always relative
+const PER_DAY = 5;
+function ageOf(lo, hi, n) {
+  const d = (n - (lo + hi)/2)/PER_DAY;
+  if (d < 1)   return "today";
+  if (d < 2)   return "yesterday";
+  if (d < 13)  return Math.round(d) + " days ago";
+  if (d < 55)  return Math.round(d/7) + " weeks ago";
+  if (d < 330) return "~" + Math.round(d/30) + " months ago";
+  return "~" + (d/365).toFixed(1) + " years ago";
+}
+
+// ----------------------------------------------- cover (a port of ../memo)
+function tiles(t, a) {
+  let root = 1; while (root < t) root *= 2;
+  const out = [], st = [[0, root]];
+  while (st.length) {
+    const [lo, hi] = st.pop();
+    if (lo >= t) continue;
+    const size = hi - lo;
+    if (size > 1 && (hi > t || size > a*(t - lo))) {
+      const mid = (lo + hi)/2; st.push([mid, hi]); st.push([lo, mid]);
+    } else out.push([lo, hi]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+function cover(t, budget) {
+  if (t <= 0) return [];
+  if (t <= budget) return Array.from({length: t}, (_, i) => [i, i+1]);
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 50; k++) {
+    const mid = (lo + hi)/2;
+    if (tiles(t, mid).length > budget) lo = mid; else hi = mid;
+  }
+  const out = tiles(t, hi);
+  while (out.length < budget) {
+    let i = -1;
+    for (let j = out.length - 1; j >= 0; j--) if (out[j][1] - out[j][0] > 1) { i = j; break; }
+    if (i < 0) break;
+    const [l, h] = out[i], m = (l + h)/2;
+    out.splice(i, 1, [l, m], [m, h]);
+  }
+  return out;
+}
+
+// -------------------------------------------------------------- the objects
+function memCard(x, y, w, h, text, opt) {
+  const o = opt || {}, k = o.k || 0, cw = o.chipW || 56;
+  box(x, y, w, h, 7, o.hot ? "#ffffff" : CARD, o.hot ? lvl(k) : EDGE, o.hot ? 2.5 : 1.5);
+  const fs = o.fs || clamp(h*0.38, 9, 19);
+  let tx = x + 22;
+  if (o.chip) {
+    box(x + 12, y + h*0.2, cw, h*0.6, 5, lvl(k));
+    T(o.chip, x + 12 + cw/2, y + h/2 + 5, o.fs ? 13 : 15, "#ffffff", "center", true);
+    tx = x + 26 + cw;
+  }
+  if (h > 13) T(fit(text, x + w - tx - 20, fs), tx, y + h/2 + fs*0.36, fs, INK);
+}
+// the log as a window: it never scrolls. every memory stays inside the box,
+// so as they pile up the rows simply get thinner and thinner. xf is a
+// continuous count: whole memories sit at full alpha, the next one fades in
+const WIN = { x: 268, y: 140, w: 744, h: 476 };
+function logWindow(xf, aFrame) {
+  const n = Math.ceil(xf), full = Math.floor(xf);
+  const pitch = Math.min(56, WIN.h/n);
+  const h = Math.max(pitch - clamp(pitch*0.16, 0.25, 9), 0.4);
+  cx.globalAlpha = aFrame;
+  box(WIN.x - 14, WIN.y - 14, WIN.w + 28, WIN.h + 28, 12, "#ffffff", EDGE, 1.5);
+  T("LOG.txt", WIN.x - 14, WIN.y - 26, 16, DIM);
+  cx.globalAlpha = 1;
+  for (let i = 0; i < n; i++) {
+    const y = WIN.y + i*pitch;
+    cx.globalAlpha = i < full ? 1 : clamp((xf - full)*3, 0, 1);
+    if (pitch > 15) memCard(WIN.x, y, WIN.w, h, MEM[i % MEM.length]);
+    else box(WIN.x, y, WIN.w*(0.40 + 0.57*rnd(i)), h, pitch > 4 ? 1 : 0, "#c4ccd5");
+    cx.globalAlpha = 1;
+  }
+  T(num(full) + (full === 1 ? " memory" : " memories"), W/2, WIN.y + WIN.h + 62, 24,
+    full > 300 ? "#c2410c" : DIM, "center");
+}
+// the memory context: nine rows, whatever the log holds
+const DOC = { x: 236, w: 812, y: 136, h: 46, gap: 6 };
+const rowY = i => DOC.y + i*(DOC.h + DOC.gap);
+function docRow(lo, hi, y, n, o) {
+  o = o || {};
+  const h = o.h === undefined ? DOC.h : o.h, k = Math.log2(hi - lo);
+  cx.globalAlpha = o.a === undefined ? 1 : o.a;
+  box(DOC.x, y, DOC.w, h, 7, o.hot ? "#fffdf5" : CARD, o.hot ? "#d98c00" : EDGE,
+      o.hot ? 2.5 : 1.5);
+  const ch = Math.min(26, h - 8);
+  if (ch > 8) {
+    box(DOC.x + 12, y + h/2 - ch/2, 58, ch, 5, lvl(k));
+    if (ch > 20)
+      T("\u00d7" + (hi - lo), DOC.x + 41, y + h/2 + 5, 15, "#ffffff", "center", true);
+  }
+  if (h > 32) {
+    T(fit(blockText(lo, hi), 540, 17), DOC.x + 88, y + h/2 + 6, 17, INK);
+    T(ageOf(lo, hi, n), DOC.x + DOC.w - 18, y + h/2 + 6, 15, DIM, "right");
+  }
+  if (o.flash > 0.02) {
+    cx.globalAlpha = o.flash;
+    box(DOC.x - 5, y - 5, DOC.w + 10, h + 10, 10, null, "#ffc400", 3);
+  }
+  cx.globalAlpha = 1;
+}
+function docFrame(n, a) {
+  cx.globalAlpha = a === undefined ? 1 : a;
+  rich("the *memory context* remains *constant-sized*", W/2, DOC.y - 26, 27);
+  T(num(n) + " memories", W/2 - 195, rowY(9) + 42, 23, INK, "center");
+  T("8k tokens, always", W/2 + 195, rowY(9) + 42, 23, GREEN, "center");
+  cx.globalAlpha = 1;
+}
+// the tree of blocks: 512 memories at the bottom, one block per size above
+const WN = 512, WB = 9;
+const PYR = { x: 110, w: 1060, base: 590, dy: 45 };
+function pyrRect(lo, hi) {
+  const uw = PYR.w/WN, bw = (hi - lo)*uw;
+  return [PYR.x + lo*uw, PYR.base - Math.log2(hi - lo)*PYR.dy,
+          Math.max(bw - Math.min(4, bw*0.15), 1.4)];
+}
+// only blocks that exist: a block whose range runs past the last memory has
+// not been built, so the top of the tree is ragged, not a row of empty slots.
+// the side margins are too narrow for labels, so "less detail" sits above the
+// top block and "fine detail" in the empty right column, over the "now" corner
+function pyramid(litAt, labA, labB) {
+  const last = WN - 1, covr = cover(last, WB), lit = new Map();
+  covr.forEach((b, i) => lit.set(b[0] + "-" + b[1], i));
+  for (let s = 1; s <= WN; s *= 2) {
+    const k = Math.log2(s);
+    for (let lo = 0; lo + s <= last; lo += s) {
+      const i = lit.get(lo + "-" + (lo + s)), on = i === undefined ? 0 : litAt(i);
+      const [x, y, w] = pyrRect(lo, lo + s);
+      box(x, y, w, 22, 3, on > 0 ? lvl(k, 40 + 8*on) : "#dde3ea");
+      if (on > 0.4) {
+        if (w > 8) box(x, y, w, 22, 3, null, "#ffffff", 1.5);
+        else box(x - 2.5, y - 2.5, w + 5, 27, 4, null, lvl(k, 32), 2);
+      }
+    }
+  }
+  T("oldest", PYR.x, PYR.base + 52, 16, FAINT);
+  T("now", PYR.x + PYR.w, PYR.base + 52, 16, GREEN, "right");
+  const ga = cx.globalAlpha;
+  if (labA > 0) {
+    cx.globalAlpha = ga*labA;
+    T("less detail", 373, 196, 16, "#d98c00", "center", true);
+    arrow(373, 204, 224, "#d98c00");
+  }
+  if (labB > 0) {
+    cx.globalAlpha = ga*labB;
+    T("fine detail", 1172, 490, 14, GREEN, "center", true);
+    arrow(1172, 500, 583, GREEN);
+  }
+  cx.globalAlpha = ga;
+  return covr;
+}
+
+// ------------------------------------------------------------------- beats
+const S = {};
+
+S.say = (u, dur, b) => {
+  const ls = b.slice(2).filter(s => s !== punch), y0 = 372 - (ls.length - 1)*30;
+  ls.forEach((s, i) => {
+    cx.globalAlpha = i === 0 ? 1 : ease((u - b.at[i])/0.4);
+    rich(s, W/2, y0 + i*60, 34);
+    cx.globalAlpha = 1;
+  });
+};
+
+// the list stays centred: old cards slide up while the new one fades in
+S.one = (u, dur, b) => {
+  const n = b[2], w = 700, x = (W - w)/2, h = 60;
+  const topOf = m => 372 - (m*72 - 12)/2;
+  const top = n === 1 ? topOf(1) : lerp(topOf(n - 1), topOf(n), ease(u/0.35));
+  for (let i = 0; i < n; i++) {
+    cx.globalAlpha = i === n - 1 ? ease((u - 0.15)/0.45) : 1;
+    memCard(x, top + i*72, w, h, MEM[i], {fs: 19});
+    cx.globalAlpha = 1;
+  }
+};
+
+// The log fills on ONE curve: the four memories already read are there at the
+// start, and every later arrival follows from the same formula, so the gaps
+// only ever shrink -- no seam, no pause, no hand-placed card.
+const LOG_N1 = 1000;
+S.log = (u, dur) => {
+  const p = clamp((u - 1.0)/(dur - 2.6), 0, 1);
+  logWindow(4*Math.pow(LOG_N1/4, p*p), ease(u/0.5));
+};
+
+S.prune = (u, dur) => {
+  const n = 7, w = 700, x = (W - w)/2, pitch = 68, h = 56, top = 372 - (n*pitch - 12)/2;
+  const keep = new Set([1, 4]);
+  for (let i = 0; i < n; i++) {
+    const dead = !keep.has(i), s = ease((u - 1.0 - i*0.22)/0.45), y = top + i*pitch;
+    cx.globalAlpha = dead ? 1 - 0.8*s : 1;
+    memCard(x, y, w, h, MEM[i], {fs: 18});
+    cx.globalAlpha = 1;
+    if (dead && s > 0) {
+      cx.strokeStyle = `rgba(207,34,48,${0.9 - 0.45*s})`; cx.lineWidth = 2.5; cx.beginPath();
+      cx.moveTo(x + 18, y + h/2); cx.lineTo(x + 18 + (w - 36)*s, y + h/2); cx.stroke();
+      cx.lineWidth = 1;
+    }
+  }
+};
+
+// two memories in, one broader memory out -- inputs and output share the screen
+S.merge = u => {
+  const w = 700, x = (W - w)/2, h = 60;
+  const shown = ease((u - 1.5)/0.45), born = ease((u - 2.2)/0.55), gone = ease((u - 3.5)/0.7);
+  cx.globalAlpha = 1 - gone;
+  memCard(x, 232, w, h, MEM[0], {fs: 19});
+  memCard(x, 304, w, h, MEM[1], {fs: 19});
+  cx.globalAlpha = 1;
+  if (shown > 0 && gone < 1) {
+    cx.globalAlpha = shown*(1 - gone);
+    arrow(W/2, 384, 428, "rgba(15,138,69,.85)");
+    cx.globalAlpha = 1;
+  }
+  if (born > 0) {
+    cx.globalAlpha = born;
+    memCard(x, lerp(448, 372, gone), w, h, NODE["0-2"],
+            {chip: "\u00d72", k: 1, hot: true, fs: 19});
+    cx.globalAlpha = 1;
+  }
+};
+
+// memories squeeze together into a slit, flash, and unfold as one broader
+// memory. they never overlap while readable, so the eye follows what became what
+const CH = 54;
+function fuse(p, ins, ys, out, oy, chipIn, chipOut, kIn, kOut, hot) {
+  const w = 700, x = (W - w)/2;
+  const m = ease(p/0.60), g = ease((p - 0.60)/0.28);
+  if (m < 1) {
+    const hi = lerp(CH, 6, m);
+    ins.forEach((t, i) => memCard(x, lerp(ys[i], oy + (CH - hi)/2, m), w, hi, t,
+                                  {chip: hi > 24 ? chipIn : "", k: kIn, fs: 19}));
+    return;
+  }
+  const h = lerp(6, CH, g), y = oy + (CH - h)/2;
+  memCard(x, y, w, h, out, {chip: h > 30 ? chipOut : "", k: kOut, hot: hot, fs: 19});
+  const fl = clamp(1 - Math.abs(p - 0.64)/0.22, 0, 1);
+  if (fl > 0.02) {
+    cx.globalAlpha = fl;
+    box(x - 5, y - 5, w + 10, h + 10, 10, null, "#ffc400", 3);
+    cx.globalAlpha = 1;
+  }
+}
+const FY = [234, 300, 366, 432], MY = [267, 399], FINAL = 333;
+S.fold = u => {
+  const p2 = clamp((u - 4.4)/1.2, 0, 1);
+  if (p2 > 0) return fuse(p2, [NODE["0-2"], NODE["2-4"]], MY, NODE["0-4"],
+                          FINAL, "\u00d72", "\u00d74", 1, 2, true);
+  const p1 = clamp((u - 1.2)/1.2, 0, 1);
+  fuse(p1, [MEM[0], MEM[1]], [FY[0], FY[1]], NODE["0-2"], MY[0], "", "\u00d72", 0, 1);
+  fuse(p1, [MEM[2], MEM[3]], [FY[2], FY[3]], NODE["2-4"], MY[1], "", "\u00d72", 0, 1);
+};
+
+S.tree = (u, dur) => {
+  const n = 8, x0 = 48, wtot = 1184, uw = wtot/n, baseY = 490, dy = 98;
+  const at = k => baseY - k*dy, born = k => 1.0 + (k - 1)*2.75;
+  for (let k = 3; k >= 1; k--) {
+    const s = 1 << k, a = ease((u - born(k))/0.7);
+    if (a <= 0) continue;
+    for (let lo = 0; lo + s <= n; lo += s) {
+      const y = lerp(at(k - 1), at(k), a), w = s*uw - 14;
+      cx.globalAlpha = a;
+      cx.strokeStyle = "rgba(15,138,69,.25)"; cx.beginPath();
+      cx.moveTo(x0 + lo*uw + s*uw/4, y + 46); cx.lineTo(x0 + lo*uw + s*uw/4, at(k-1));
+      cx.moveTo(x0 + lo*uw + 3*s*uw/4, y + 46); cx.lineTo(x0 + lo*uw + 3*s*uw/4, at(k-1));
+      cx.stroke();
+      memCard(x0 + lo*uw + 7, y, w, 46, NODE[lo + "-" + (lo + s)],
+              {chip: "\u00d7" + s, k, hot: true, chipW: k === 1 ? 34 : 54, fs: k === 1 ? 13 : 16});
+      cx.globalAlpha = 1;
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    box(x0 + i*uw + 7, baseY, uw - 14, 46, 7, CARD, EDGE, 1.5);
+    T(fit(SHORT[i], uw - 26, 12), x0 + i*uw + uw/2, baseY + 29, 12, INK, "center");
+  }
+};
+
+// each new memory lands, then the merges it enables cascade up one level at a
+// time: a parent starts rising only once its right child has settled in place
+S.spot = (u, dur) => {
+  const n = 32, x0 = 190, wtot = 900, uw = wtot/n, baseY = 450, dy = 50, RISE = 0.3;
+  const tOf = [];
+  for (let i = 0, t = 0.4; i < n; i++) { tOf.push(t); t += Math.max(0.05, 0.75*Math.pow(0.8, i)); }
+  const born = (lo, s) => s === 2 ? tOf[lo + 1] + 0.25 : born(lo + s/2, s/2) + RISE;
+  let live = 0; while (live < n && tOf[live] <= u) live++;
+  let merges = 0;
+  for (let i = 0; i < live; i++)
+    box(x0 + i*uw + 1, baseY, uw - 3, 22, 3, lvl(0, 40 + 8*ease((u - tOf[i])/0.25)));
+  for (let s = 2; s <= n; s *= 2) {
+    const k = Math.log2(s);
+    for (let lo = 0; lo + s <= n; lo += s) {
+      const bt = born(lo, s), a = ease((u - bt)/RISE);
+      if (a <= 0) continue;
+      merges++;
+      const fl = a > 0.9 ? clamp(1 - (u - bt)/0.7, 0, 1) : 0;
+      const y = lerp(baseY - (k-1)*dy, baseY - k*dy, a);
+      box(x0 + lo*uw + 1 - 3*fl, y - 2*fl, s*uw - 3 + 6*fl, 22 + 4*fl, 3, lvl(k, 40 + 22*fl));
+      if (fl > 0.03) box(x0 + lo*uw + 1 - 3*fl, y - 2*fl, s*uw - 3 + 6*fl, 22 + 4*fl, 3,
+                         null, `rgba(255,196,0,${fl})`, 2.5);
+    }
+  }
+  const a1 = ease((u - 1.3)/0.4), a2 = ease((u - 6.5)/0.4);
+  if (a1 > 0) {
+    cx.globalAlpha = a1;
+    T("fine detail", 85, baseY + 16, 16, GREEN, "center", true);
+    harrow(148, x0 - 8, baseY + 11, GREEN);
+    cx.globalAlpha = 1;
+  }
+  if (a2 > 0) {
+    cx.globalAlpha = a2;
+    T("less detail", 85, baseY - 5*dy + 16, 16, "#d98c00", "center", true);
+    harrow(148, x0 - 8, baseY - 5*dy + 11, "#d98c00");
+    cx.globalAlpha = 1;
+  }
+  T(live + " memories", W/2 - 170, 556, 25, INK, "center");
+  T(merges + " merges", W/2 + 170, 556, 25, lvl(2), "center");
+};
+
+S.select = (u, dur) => pyramid(i => ease((u - 0.7 - i*0.42)/0.4),
+                               ease((u - 1.4)/0.5), ease((u - 4.6)/0.5));
+
+S.fly = (u, dur) => {
+  const covr = cover(WN - 1, WB);
+  const treeA = clamp(1 - ease(u/0.9), 0, 1);
+  if (treeA > 0) { cx.globalAlpha = treeA; pyramid(() => 1, 1, 1); cx.globalAlpha = 1; }
+  covr.forEach((b, i) => {
+    const k = Math.log2(b[1] - b[0]), p = ease((u - 0.25 - i*0.1)/1.3);
+    const [tx, ty, tw] = pyrRect(b[0], b[1]);
+    const x = lerp(tx, DOC.x + 12, p), y = lerp(ty, rowY(i) + 10, p);
+    if (p < 0.999) box(x, y, lerp(tw, 58, p), lerp(22, DOC.h - 20, p), 5, lvl(k));
+    else docRow(b[0], b[1], rowY(i), WN);
+  });
+  docFrame(WN - 1, ease((u - 1.7)/0.5));
+};
+
+// the resting context, with two arrows naming what the eye should compare:
+// the top row is old and broad, the bottom row is recent and fine
+function side(l1, l2, row, color, a) {
+  if (a <= 0) return;
+  const y = rowY(row) + DOC.h/2;
+  cx.globalAlpha = a;
+  T(l1, 118, y - 4, 16, color, "center", true);
+  T(l2, 118, y + 16, 16, color, "center", true);
+  harrow(192, DOC.x - 10, y, color);
+  cx.globalAlpha = 1;
+}
+S.doc = (u, dur) => {
+  cover(WN - 1, WB).forEach((b, i) => docRow(b[0], b[1], rowY(i), WN));
+  docFrame(WN - 1);
+  const out = ease((dur - u)/0.4);
+  side("long ago", "less detail", 0, "#d98c00", ease((u - 1.0)/0.4)*out);
+  side("now", "fine detail", WB - 1, GREEN, ease((u - 2.4)/0.4)*out);
+};
+
+// cover spends its budget in powers of two, so for some counts it lands one
+// row over; step back to the newest count that fits, so the context never jumps
+function ctxAt(n) {
+  let m = n; while (m > WB && cover(m, WB).length !== WB) m--;
+  return cover(m, WB);
+}
+// one memory arrives, two rows merge, the context is nine rows again
+function ctxStep(nA, nB, p) {
+  const A = ctxAt(nA), B = nB === nA ? A : ctxAt(nB);
+  const key = b => b[0] + "-" + b[1];
+  const iA = new Map(A.map((b, i) => [key(b), i]));
+  const inB = new Set(B.map(key));
+  const m = ease(p/0.62), g = ease((p - 0.62)/0.30);
+  A.forEach((b, i) => {
+    if (inB.has(key(b)) || m >= 1) return;
+    let pj = B.length - 1;
+    B.forEach((c, j) => { if (c[0] <= b[0] && b[1] <= c[1]) pj = j; });
+    const h = lerp(DOC.h, 6, m);
+    docRow(b[0], b[1], lerp(rowY(i), rowY(pj) + (DOC.h - h)/2, m), nA,
+           {h: h, flash: m});
+  });
+  B.forEach((b, j) => {
+    const from = iA.get(key(b));
+    if (from !== undefined)
+      return docRow(b[0], b[1], lerp(rowY(from), rowY(j), ease(p)), nB);
+    if (b[1] - b[0] === 1)
+      return docRow(b[0], b[1], rowY(j), nB, {a: ease((p - 0.5)/0.4)});
+    if (g <= 0) return;
+    const h = lerp(6, DOC.h, g);
+    docRow(b[0], b[1], rowY(j) + (DOC.h - h)/2, nB,
+           {h: h, flash: clamp(1 - Math.abs(p - 0.70)/0.20, 0, 1)});
+  });
+  docFrame(nB);
+}
+// One curve, from the context the last beat left to twenty thousand memories.
+// n(u) = N0 + K*(e^s - 1) with s = S*(u/U)^a: the first arrivals are seconds
+// apart and every one after is closer than the last, forever. The merge plays
+// at every speed -- it just gets shorter until it is a flicker.
+const STEP_N0 = WN - 1, STEP_N1 = 20000, STEP_K = 3, STEP_A = 1.8;
+const STEP_S = Math.log(1 + (STEP_N1 - STEP_N0)/STEP_K);
+const stepN = (u, U) =>
+  STEP_N0 + STEP_K*(Math.exp(STEP_S*Math.pow(clamp(u/U, 0, 1), STEP_A)) - 1);
+S.step = (u, dur) => {
+  const U = dur - 2.5, x = stepN(u, U);
+  const gap = 0.02/Math.max(stepN(u + 0.01, U) - stepN(u - 0.01, U), 1e-9);
+  ctxStep(Math.floor(x), Math.floor(x) + 1,
+          clamp((x % 1)*Math.max(1, gap/0.75), 0, 1));
+};
+
+S.recall = (u, dur) => {
+  const n = STEP_N1, covr = ctxAt(n), [lo, hi] = covr[0];
+  const rest = clamp(1 - ease((u - 0.45)/0.6), 0, 1);
+  if (rest > 0)
+    for (let i = 1; i < covr.length; i++)
+      docRow(covr[i][0], covr[i][1], rowY(i), n, {a: 0.35*rest});
+  docRow(lo, hi, lerp(rowY(0), 216, ease((u - 0.45)/0.8)), n, {hot: true});
+  const q = ease((u - 1.6)/0.45);
+  if (q > 0) {
+    cx.globalAlpha = q;
+    T("memo recall 'Japan'", W/2, 342, 23, GREEN, "center");
+    arrow(W/2, 366, 424, "#d98c00");
+    cx.globalAlpha = 1;
+  }
+  const r = ease((u - 2.5)/0.4);
+  if (r > 0) {
+    cx.globalAlpha = r;
+    const txt = "#1  2015-03-08  " + MEM[0];
+    box(DOC.x, 452, DOC.w, 64, 7, "#ffffff", "#d98c00", 2.5);
+    T(txt.slice(0, Math.floor(ease((u - 2.8)/1.3)*txt.length)), DOC.x + 28, 492, 19, INK);
+    cx.globalAlpha = 1;
+  }
+};
+
+S.end = (u, dur) => {
+  T("OptMem", W/2, 284, 58, INK, "center", true);
+  cx.globalAlpha = ease((u - 0.6)/0.5);
+  T("an append-only log + a binary merge tree", W/2, 356, 23, GREEN, "center");
+  T("detail fades with age \u00b7 nothing is deleted", W/2, 396, 23, DIM, "center");
+  cx.globalAlpha = ease((u - 1.6)/0.5);
+  T("~600 lines of Python \u00b7 no database \u00b7 no embeddings", W/2, 462, 19, FAINT, "center");
+  T("github.com/VictorTaelin/OptMem", W/2, 508, 21, "#1a5fd0", "center");
+  cx.globalAlpha = 1;
+};
+
+// ------------------------------------------------------------------ pacing
+// Sentence beats size themselves: line i lands once line i-1 has been read,
+// and the beat ends one breath after the last line. One number, READ, sets
+// the whole film's tempo.
+for (const b of BEATS) {
+  if (b[0] === "say") {
+    const ls = b.slice(1).filter(s => s !== punch);
+    let t = 0; b.at = ls.map(s => { const a = t; t += READ*cost(s) + 0.3; return a; });
+    b.splice(1, 0, (t*1.2 + 0.6)*(b.includes(punch) ? 1.3 : 1));
+  } else if (b[0] === "one") {
+    b.splice(1, 0, 0.9 + READ*cost(MEM[b[1] - 1]));
+  }
+}
+const T0 = []; let DUR = 0;
+for (const b of BEATS) { T0.push(DUR); DUR += b[1]; }
+const SCENES = BEATS.map(b => [b[0] === "say"
+  ? "\u201c" + b[2].replace(/[*+_]/g, "") : b[0], b[1]]);
+
+// -------------------------------------------------------------------- main
+function draw(t) {
+  cx.fillStyle = BG; cx.fillRect(0, 0, W, H);
+  let i = 0;
+  while (i < BEATS.length - 1 && t >= T0[i] + BEATS[i][1]) i++;
+  const b = BEATS[i], dur = b[1], u = clamp(t - T0[i], 0, dur), nxt = BEATS[i + 1];
+  S[b[0]](u, dur, b);
+  const inA  = b.includes(co) ? 1 : ease(u/0.3);
+  const outA = nxt && nxt.includes(co) ? 1 : ease((dur - u)/0.3);
+  const f = 1 - Math.min(inA, outA);
+  if (f > 0) { cx.fillStyle = `rgba(255,255,255,${f})`; cx.fillRect(0, 0, W, H); }
+}
+
+if (typeof module !== "undefined") module.exports = { draw, setCtx, DUR, SCENES, T0 };
+
+
+
+================================================
+FILE: anim/video.js
+================================================
+// Renders the OptMem animation to PNG frames. Usage:
+//   node video.js            all frames at 30fps into frames/
+//   node video.js 3 9 26 40  single stills at those seconds into shots/
+const { createCanvas } = require("canvas");
+const fs = require("fs");
+const { draw, setCtx, DUR } = require("./render.js");
+
+const cv = createCanvas(1280, 720);
+setCtx(cv.getContext("2d"));
+
+const args = process.argv.slice(2);
+if (args.length) {
+  fs.mkdirSync("shots", { recursive: true });
+  for (const a of args) {
+    draw(parseFloat(a));
+    fs.writeFileSync(`shots/t${a}.png`, cv.toBuffer("image/png"));
+    console.log(`shots/t${a}.png`);
+  }
+} else {
+  const FPS = 30, N = Math.round(DUR * FPS);
+  fs.mkdirSync("frames", { recursive: true });
+  for (let f = 0; f < N; f++) {
+    draw(f / FPS);
+    fs.writeFileSync(`frames/${String(f).padStart(5, "0")}.png`, cv.toBuffer("image/png"));
+    if (f % 300 === 0) console.log(`${f}/${N}`);
+  }
+  console.log("done. now: ffmpeg -framerate 30 -i frames/%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 optmem.mp4");
+}
+
+
