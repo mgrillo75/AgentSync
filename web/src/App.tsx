@@ -1,4 +1,15 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bot,
+  Boxes,
+  BrainCircuit,
+  Cable,
+  Gauge,
+  KeyRound,
+  MessageCircleMore,
+  Network,
+  type LucideIcon
+} from "lucide-react";
 import { api, browserWsUrl } from "./lib/api";
 import { isCorrelatedNexusReply, type PendingNexusMessage } from "./lib/nexusReply.js";
 import { PROVIDERS, providerLabel } from "./lib/providers";
@@ -13,15 +24,15 @@ type Authorization = Awaited<ReturnType<typeof api.authorizeAgent>>;
 type IssuedAccessKey = Awaited<ReturnType<typeof api.createAccessKey>>;
 type AppView = "dashboard" | "wao-instances" | "agents" | "relays" | "providers" | "comms" | "memory" | "access";
 
-const navItems: Array<{ id: AppView; label: string; icon: string; adminOnly?: boolean }> = [
-  { id: "dashboard", label: "Dashboard", icon: "DB" },
-  { id: "wao-instances", label: "WAO Instances", icon: "WI", adminOnly: true },
-  { id: "agents", label: "Agents", icon: "AG" },
-  { id: "access", label: "Access", icon: "AK" },
-  { id: "relays", label: "Relays", icon: "RL" },
-  { id: "providers", label: "Providers", icon: "PR" },
-  { id: "comms", label: "Comms", icon: "CM" },
-  { id: "memory", label: "Memory", icon: "MM", adminOnly: true }
+const navItems: Array<{ id: AppView; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
+  { id: "dashboard", label: "Dashboard", icon: Gauge },
+  { id: "wao-instances", label: "WAO Instances", icon: Boxes, adminOnly: true },
+  { id: "agents", label: "Agents", icon: Bot },
+  { id: "access", label: "Access", icon: KeyRound },
+  { id: "relays", label: "Relays", icon: Network },
+  { id: "providers", label: "Providers", icon: Cable },
+  { id: "comms", label: "Comms", icon: MessageCircleMore },
+  { id: "memory", label: "Memory", icon: BrainCircuit, adminOnly: true }
 ];
 
 function copy(text: string) {
@@ -558,7 +569,7 @@ function AppSidebar({
       <nav className="nav-list" aria-label="Primary">
         {navItems.filter((item) => !item.adminOnly || user.platformRole === "platform_admin").map((item) => (
           <button key={item.id} className={activeView === item.id ? "nav-item active" : "nav-item"} onClick={() => onChange(item.id)}>
-            <span>{item.icon}</span>
+            <span><item.icon aria-hidden="true" /></span>
             {item.label}
           </button>
         ))}
